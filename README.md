@@ -13,6 +13,7 @@ A powerful collection of tools for password analysis and wordlist optimization. 
   * [PassGenerator](#-passgenerator)
   * [WordlistOptimizer](#-wordlistoptimizer)
 * [Usage Examples](#-usage-examples)
+* [Upcoming Features](#-upcoming-features)
 * [Disclaimer](#-disclaimer)
 * [License](#-license)
 
@@ -21,12 +22,26 @@ A powerful collection of tools for password analysis and wordlist optimization. 
 ### 🔐 PassGenerator
 
 * ⚡ High-speed combination generation
-* 📊 Real-time progress tracking
-* 💾 Checkpoint system for large operations
-* 🚀 Multi-threaded processing
-* 📝 Custom character set support
+* 📊 Real-time progress tracking with colored output
+* 💾 Efficient memory management
+* 🔄 Case modifiers:
+  * `-AB`: Convert to uppercase (test -> TEST)
+  * `-Ab`: Capitalize first letter (test -> Test)
+  * `-ba`: Reverse text (test -> tset)
+  * `-Ba`: Reverse and capitalize (test -> Tset)
+  * `-BA`: Reverse and uppercase (test -> TSET)
+* 🔢 Length control:
+  * `-m`: Minimum length
+  * `-M`: Maximum length
+* 🎯 Word boundaries:
+  * `-ws`: Add prefix to words
+  * `-we`: Add suffix to words
+* 🔠 Leet speak conversion (`-L337`)
+* 🎨 Colorful interactive UI
+* 🚫 Duplicate prevention
+* 📝 UTF-8 encoding support
 
-### 🔍 WordlistOptimizer
+### �� WordlistOptimizer
 
 * 🎯 Multiple filtering options
 * 📈 Real-time statistics
@@ -58,26 +73,49 @@ pip install -r requirements.txt
 
 ### 🔑 PassGenerator
 
-Generate all possible password combinations from given characters.
+Generate all possible password combinations with advanced features.
 
 ```bash
-python PassGenerator.py -w [characters] [-o output_file] [-m max_length]
+python PassGenerator.py -w [words/chars] [options]
 ```
+
+#### Options:
+
+* `-w, --words`: Words or characters to generate combinations from (required)
+* `-o, --output`: Output file name (default: combinations.txt)
+* `-m, --min-length`: Minimum combination length (default: 1)
+* `-M, --max-length`: Maximum combination length
+* `-AB`: Convert to uppercase
+* `-Ab`: Capitalize first letter
+* `-ba`: Reverse text
+* `-Ba`: Reverse and capitalize
+* `-BA`: Reverse and uppercase
+* `-L337`: Convert to leet speak
+* `-ws, --word-start`: Add prefix to words
+* `-we, --word-end`: Add suffix to words
 
 #### Examples:
 
 ```bash
-# Basic usage
-python PassGenerator.py -w a b c
+# Basic usage with case modifiers
+python PassGenerator.py -w test -AB -Ab
+# Output: test, TEST, Test
 
-# With custom output file
-python PassGenerator.py -w a b c -o wordlist.txt
+# With length control
+python PassGenerator.py -w a b c -m 2 -M 4
+# Output: aa, aaa, aaaa, ab, aba, ...
 
-# With maximum length
-python PassGenerator.py -w a b c -m 4
+# With word boundaries
+python PassGenerator.py -w test -ws admin_ -we _2023
+# Output: admin_test_2023
 
-# With special characters
-python PassGenerator.py -w "123" "abc" "@#$" -o output.txt -m 3
+# Complex combinations
+python PassGenerator.py -w test user -m 4 -M 8 -AB -L337
+# Output: test, TEST, T3ST, user, USER, U53R, testuser, ...
+
+# Multiple features
+python PassGenerator.py -w retgere 5 Prophet -m 6 -M 12 -AB -ba -Ab -Ba
+# Output: retgere, RETGERE, eregter, Retgere, retgere5, Prophet, ...
 ```
 
 ### 🔍 WordlistOptimizer
@@ -152,6 +190,33 @@ python PassGenerator.py -w "@" "#" "$" "%" -o special_chars.txt
 * Smart recommendations based on wordlist size
 * Real-time filter effectiveness tracking
 </details>
+
+## 🔜 Upcoming Features
+
+### 🆕 Planned Improvements
+
+* 🚀 Performance optimizations:
+  * Generator-based combination creation
+  * Optimized memory usage
+  * Parallel processing support
+* 💾 File handling:
+  * Compressed output (.gz format)
+  * Resume capability
+  * Disk space checks
+* 📊 Enhanced progress tracking:
+  * Estimated time remaining
+  * Memory usage indicator
+  * Wordlist statistics
+* 🛡️ Error handling:
+  * Memory overflow protection
+  * Large combination warnings
+* ⚙️ Configuration:
+  * Custom configuration files
+  * Combination limit settings
+* 🎯 Code improvements:
+  * Class-based architecture
+  * Modular function design
+  * Enhanced error handling
 
 ## ⚠️ Disclaimer
 
