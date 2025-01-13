@@ -16,6 +16,7 @@ os.chdir(SCRIPT_DIR)
 from modules.filters import FilterStats, PasswordFilter
 from modules.ui_manager import UIManager
 from modules.settings_manager import Settings, FilterRecommender
+from modules.language_manager import LanguageManager
 
 def check_keyboard_input():
     """Klavye girişini kontrol eder."""
@@ -25,21 +26,22 @@ def check_keyboard_input():
     return None
 
 class WordlistOptimizer:
-    def __init__(self):
+    def __init__(self, options, language_manager):
         self.ui = UIManager()
         self.settings = Settings()
         self.password_filter = PasswordFilter()
         self.recommender = FilterRecommender()
+        self.language_manager = language_manager
     
-    def optimize(self, input_file, output_file, options):
+    def optimize(self):
         """Wordlist'i optimize eder."""
         try:
             # Checkpoint dosyası adı
-            checkpoint_file = f"{output_file}.checkpoint"
+            checkpoint_file = f"{self.options.output}.checkpoint"
             checkpoint = CheckpointManager(checkpoint_file)
             
             # Toplam satır sayısı
-            total_lines = sum(1 for _ in open(input_file, 'r', encoding='utf-8'))
+            total_lines = sum(1 for _ in open(self.options.input, 'r', encoding='utf-8'))
             
             # İşlemci sayısı ve chunk boyutu
             cpu_count = max(1, mp.cpu_count() - 1)
@@ -48,12 +50,12 @@ class WordlistOptimizer:
             total_passwords = checkpoint.processed_count
             removed_passwords = checkpoint.removed_count
             
-            self.ui.print_header("Wordlist Optimizasyonu")
+            self.ui.print_header(self.language_manager.get_text("wordlist_optimization"))
             if checkpoint.last_position > 0:
-                self.ui.print_info(f"Checkpoint bulundu: {checkpoint.last_position:,} şifre işlenmiş")
-            self.ui.print_info(f"{cpu_count} işlemci kullanılıyor")
-            self.ui.print_info(f"Chunk boyutu: {chunk_size:,} şifre")
-            self.ui.print_info("İşlemi durdurmak için 'q', checkpoint alıp durdurmak için 'c' tuşuna basın")
+                self.ui.print_info(f"{self.language_manager.get_text('checkpoint_found')} {checkpoint.last_position:,} {self.language_manager.get_text('passwords_processed')}")
+            self.ui.print_info(f"{cpu_count} {self.language_manager.get_text('processors_used')}")
+            self.ui.print_info(f"{self.language_manager.get_text('chunk_size')} {chunk_size:,} {self.language_manager.get_text('passwords')}")
+            self.ui.print_info(f"{self.language_manager.get_text('press_q_to_stop')} {self.language_manager.get_text('press_c_to_checkpoint')}")
             
             # Process pool
             pool = mp.Pool(processes=cpu_count)
@@ -62,8 +64,8 @@ class WordlistOptimizer:
             filter_stats = FilterStats()
             
             try:
-                with open(input_file, 'r', encoding='utf-8') as infile, \
-                     open(output_file, 'a' if checkpoint.last_position > 0 else 'w', encoding='utf-8') as outfile:
+                with open(self.options.input, 'r', encoding='utf-8') as infile, \
+                     open(self.options.output, 'a' if checkpoint.last_position > 0 else 'w', encoding='utf-8') as outfile:
                     
                     # Checkpoint konumuna git
                     if checkpoint.last_position > 0:
@@ -72,8 +74,8 @@ class WordlistOptimizer:
                     
                     progress_bar = tqdm(total=total_lines,
                                       initial=checkpoint.last_position,
-                                      desc=f"Toplam: {checkpoint.last_position:,}",
-                                      unit=' şifre',
+                                      desc=f"{self.language_manager.get_text('total')} {checkpoint.last_position:,}",
+                                      unit=self.language_manager.get_text('password'),
                                       dynamic_ncols=True,
                                       position=0,
                                       leave=True,
@@ -101,7 +103,7 @@ class WordlistOptimizer:
                                     total_passwords,
                                     removed_passwords
                                 )
-                                self.ui.print_success(f"Checkpoint kaydedildi: {checkpoint_file}")
+                                self.ui.print_success(f"{self.language_manager.get_text('checkpoint_saved')} {checkpoint_file}")
                                 if 'pool' in locals():
                                     pool.terminate()
                                 return
@@ -114,7 +116,7 @@ class WordlistOptimizer:
                             chunk_size_actual = len(chunk)
                             
                             # İşleme için veri hazırla
-                            chunk_data = (chunk, options, options.min_length, options.max_length, filter_stats)
+                            chunk_data = (chunk, self.options, self.options.min_length, self.options.max_length, filter_stats)
                             
                             # Chunk'ı işle
                             valid_passwords = pool.apply(self.process_chunk, (chunk_data,))
@@ -169,18 +171,18 @@ class WordlistOptimizer:
                 os.remove(checkpoint_file)
             
             self.ui.print_success("\nOptimizasyon tamamlandı!")
-            self.ui.print_info(f"Toplam şifre sayısı: {total_passwords:,}")
-            self.ui.print_info(f"Kaldırılan şifre sayısı: {removed_passwords:,}")
-            self.ui.print_info(f"Kalan şifre sayısı: {total_passwords - removed_passwords:,}")
-            self.ui.print_info(f"Azalma oranı: %{(removed_passwords/total_passwords*100):.2f}")
+            self.ui.print_info(f"{self.language_manager.get_text('total_passwords')} {total_passwords:,}")
+            self.ui.print_info(f"{self.language_manager.get_text('removed_passwords')} {removed_passwords:,}")
+            self.ui.print_info(f"{self.language_manager.get_text('remaining_passwords')} {total_passwords - removed_passwords:,}")
+            self.ui.print_info(f"{self.language_manager.get_text('reduction_rate')} %{(removed_passwords/total_passwords*100):.2f}")
             
-            if options.keep_stats:
-                self.save_stats(output_file, total_passwords, removed_passwords, options, filter_stats)
+            if self.options.keep_stats:
+                self.save_stats(self.options.output, total_passwords, removed_passwords, self.options, filter_stats)
         
         except FileNotFoundError:
-            self.ui.print_error(f"Hata: '{input_file}' dosyası bulunamadı.")
+            self.ui.print_error(f"{self.language_manager.get_text('error')} '{self.options.input}' {self.language_manager.get_text('file_not_found')}")
         except Exception as e:
-            self.ui.print_error(f"Beklenmeyen bir hata oluştu: {e}")
+            self.ui.print_error(f"{self.language_manager.get_text('unexpected_error')} {e}")
             if 'pool' in locals():
                 pool.terminate()
     
@@ -221,7 +223,7 @@ class WordlistOptimizer:
                     percentage = (count / total_passwords) * 100
                     f.write(f"  - {filter_name}: {count:,} şifre (%{percentage:.2f})\n")
         
-        self.ui.print_success(f"İstatistikler kaydedildi: {stats_file}")
+        self.ui.print_success(f"{self.language_manager.get_text('stats_saved')} {stats_file}")
 
 class CheckpointManager:
     def __init__(self, checkpoint_file):
@@ -260,203 +262,28 @@ class CheckpointManager:
             return False
 
 def main():
+    # Initialize managers
+    ui_manager = UIManager()
+    settings = Settings()
+    language_manager = LanguageManager()
+    
+    # Language selection
+    selected_lang = language_manager.prompt_language_selection()
+    language_manager.set_language(selected_lang)
+    
+    # Welcome message
+    ui_manager.print_header(language_manager.get_text("welcome"))
+    
+    # Get filter options with translated text
+    options = settings.get_filter_options(language_manager)
+    
+    # Process the wordlist with selected options
     try:
-        optimizer = WordlistOptimizer()
-        
-        # Kullanıcıdan seçenekleri al
-        options = get_filter_options(optimizer)
-        
-        # Optimizasyonu başlat
-        optimizer.optimize(options.input, options.output, options)
-        
-    except KeyboardInterrupt:
-        optimizer.ui.print_warning("\n\nProgram kullanıcı tarafından durduruldu.")
+        wordlist_optimizer = WordlistOptimizer(options, language_manager)
+        wordlist_optimizer.optimize()
     except Exception as e:
-        optimizer.ui.print_error(f"\nHata: {e}")
+        ui_manager.print_error(f"Error: {str(e)}")
+        sys.exit(1)
 
-def get_filter_options(optimizer):
-    """Kullanıcıdan filtre seçeneklerini alır."""
-    last_settings = optimizer.settings.load_settings()
-    options = argparse.Namespace()
-    
-    # Tüm olası filtreleri başlangıçta False olarak ayarla
-    default_filters = {
-        'min_length_filter': False,
-        'repetitive_chars': False,
-        'pattern_repetition': False,
-        'sequential_chars': False,
-        'keyboard_patterns': False,
-        'number_only': False,
-        'letter_only': False,
-        'special_patterns': False,
-        'single_char_type': False,
-        'year_patterns': False,
-        'date_patterns': False,
-        'phone_patterns': False,
-        'common_words': False,
-        'leet_speak': False
-    }
-    
-    for filter_name, value in default_filters.items():
-        setattr(options, filter_name, value)
-    
-    optimizer.ui.print_header("Wordlist Optimize Edici")
-    optimizer.ui.print_info("Bu program, wordlist dosyanızı optimize ederek daha etkili hale getirir.")
-    
-    if last_settings:
-        use_last = optimizer.ui.get_user_input(
-            "Son kullanılan ayarları kullanmak ister misiniz?",
-            ['e', 'h'],
-            'h',
-            "Son kullanılan ayarlar bulundu."
-        )
-        if use_last == 'e':
-            for key, value in last_settings.items():
-                setattr(options, key, value)
-            return options
-    
-    # Dosya bilgileri
-    optimizer.ui.print_header("Dosya Bilgileri")
-    options.input = optimizer.ui.get_user_input(
-        "Wordlist dosyası adı",
-        description="Optimize edilecek wordlist dosyasının adını girin."
-    )
-    options.output = optimizer.ui.get_user_input(
-        "Çıktı dosyası adı",
-        default="optimized.txt",
-        description="Optimize edilmiş wordlist'in kaydedileceği dosya adını girin."
-    )
-    
-    # Uzunluk filtreleri
-    optimizer.ui.print_header("Uzunluk Filtreleri")
-    min_length = optimizer.ui.get_user_input(
-        "Minimum şifre uzunluğu",
-        default="",
-        description="Minimum şifre uzunluğunu belirtin (boş bırakabilirsiniz)."
-    )
-    max_length = optimizer.ui.get_user_input(
-        "Maksimum şifre uzunluğu",
-        default="",
-        description="Maksimum şifre uzunluğunu belirtin (boş bırakabilirsiniz)."
-    )
-    options.min_length = int(min_length) if min_length.isdigit() else None
-    options.max_length = int(max_length) if max_length.isdigit() else None
-    
-    # Filtre grupları
-    optimizer.ui.print_header("Filtre Grupları")
-    optimizer.ui.print_info("Filtre gruplarını toplu olarak veya tek tek seçebilirsiniz.")
-    
-    groups = optimizer.settings.get_filter_groups()
-    selected_groups = []
-    
-    for group_name, filters in groups.items():
-        optimizer.ui.print_filter_group(
-            group_name,
-            optimizer.settings.get_group_description(group_name)
-        )
-        
-        group_choice = optimizer.ui.get_user_input(
-            f"Bu grup için seçiminiz (t: tümü, s: seç, h: hiçbiri)",
-            ['t', 's', 'h'],
-            'h'
-        )
-        
-        if group_choice == 't':
-            selected_groups.extend(filters)
-        elif group_choice == 's':
-            optimizer.ui.print_info("\nGrup içindeki filtreleri tek tek seçin:")
-            for filter_name in filters:
-                if optimizer.ui.get_user_input(
-                    f"  {filter_name} ({optimizer.settings.get_filter_description(filter_name)})",
-                    ['e', 'h'],
-                    'h'
-                ) == 'e':
-                    selected_groups.append(filter_name)
-    
-    # Seçilen grupları options'a ekle
-    for filter_name in set(selected_groups):
-        setattr(options, filter_name, True)
-    
-    # İstatistik kaydı
-    optimizer.ui.print_header("İstatistik Ayarları")
-    options.keep_stats = optimizer.ui.get_user_input(
-        "İstatistikleri kaydet?",
-        ['e', 'h'],
-        'e',
-        "İşlem sonunda detaylı istatistikler kaydedilsin mi?"
-    ) == 'e'
-    
-    # Filtre önerileri
-    try:
-        wordlist_size = os.path.getsize(options.input)
-        
-        optimizer.ui.print_header("Filtre Önerileri")
-        optimizer.ui.print_info("Wordlist boyutunuza göre öneriler:")
-        
-        recommendations = optimizer.recommender.get_recommendations(wordlist_size)
-        
-        # Önerileri numaralandırarak göster
-        for i, (preset_name, description) in enumerate(recommendations, 1):
-            optimizer.ui.print_info(f"\n{i}) {preset_name}")
-            optimizer.ui.print_info(f"  {description}")
-            optimizer.ui.print_info("  İçerdiği filtreler:")
-            for filter_name in optimizer.recommender.common_combinations[preset_name]:
-                optimizer.ui.print_info(
-                    f"    - {filter_name}: {optimizer.settings.get_filter_description(filter_name)}"
-                )
-        
-        use_recommendation = optimizer.ui.get_user_input(
-            "\nÖnerilen filtrelerden birini kullanmak ister misiniz?",
-            ['e', 'h'],
-            'h'
-        )
-        
-        if use_recommendation == 'e':
-            valid_choices = [str(i) for i in range(1, len(recommendations) + 1)]
-            choice = optimizer.ui.get_user_input(
-                "Hangi öneriyi kullanmak istersiniz? (numara girin)",
-                valid_choices,
-                '1'
-            )
-            
-            # Seçilen filtreleri options'a ekle ve varsayılan False değerlerini ayarla
-            selected_preset = recommendations[int(choice) - 1][0]
-            for filter_name in optimizer.recommender.common_combinations[selected_preset]:
-                setattr(options, filter_name, True)
-            
-            # Tüm olası filtreleri False olarak ayarla
-            all_filters = set()
-            for filters in optimizer.recommender.common_combinations.values():
-                all_filters.update(filters)
-            for filter_name in all_filters:
-                if not hasattr(options, filter_name):
-                    setattr(options, filter_name, False)
-    except Exception as e:
-        optimizer.ui.print_warning(f"Filtre önerileri yüklenirken hata oluştu: {e}")
-        pass
-    
-    # Filtre skoru göster
-    score = optimizer.recommender.get_filter_score(selected_groups)
-    optimizer.ui.print_info(f"\nSeçilen filtrelerin etkinlik skoru: %{score:.1f}")
-    if score < 50:
-        optimizer.ui.print_warning("Düşük filtreleme skoru. Daha fazla filtre eklemeyi düşünebilirsiniz.")
-    elif score > 80:
-        optimizer.ui.print_success("Yüksek filtreleme skoru. İyi bir seçim!")
-    
-    # Onay
-    while True:
-        confirm = optimizer.ui.get_user_input(
-            "\nSeçimlerinizi onaylıyor musunuz?",
-            ['e', 'h'],
-            'e'
-        )
-        if confirm == 'e':
-            # Ayarları kaydet
-            optimizer.settings.save_settings(options)
-            return options
-        else:
-            optimizer.ui.print_warning("\nFiltreleri tekrar seçmek için programı yeniden başlatın.")
-            sys.exit(0)
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     main() 
