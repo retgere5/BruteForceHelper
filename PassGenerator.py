@@ -22,64 +22,96 @@ def leet_convert(word):
         't': '7', 'T': '7',
         'z': '2', 'Z': '2'
     }
-    leet_word = ''
-    for char in word:
-        leet_word += leet_dict.get(char, char)
-    return leet_word
+    return ''.join(leet_dict.get(char, char) for char in word)
 
-def apply_case_modifiers(word, uppercase=False, capitalize=False, reverse=False, reverse_capitalize=False, reverse_upper=False, leet=False):
-    results = []  # Don't include original word as it's already written
+def calculate_total_combinations(word_count, min_length, max_length, modifiers):
+    """Calculate total number of combinations including all modifications"""
+    length_range = range(min_length, max_length + 1 if max_length else word_count + 1)
+    base_combinations = sum(word_count ** i for i in length_range)
     
-    if reverse or reverse_capitalize or reverse_upper:
+    # Calculate modifier multiplier
+    modifier_multiplier = 1
+    if modifiers.get('uppercase'):
+        modifier_multiplier += 1
+    if modifiers.get('capitalize'):
+        modifier_multiplier += 1
+    if modifiers.get('reverse'):
+        modifier_multiplier += 1
+    if modifiers.get('reverse_capitalize'):
+        modifier_multiplier += 1
+    if modifiers.get('reverse_upper'):
+        modifier_multiplier += 1
+    if modifiers.get('leet'):
+        modifier_multiplier *= 2
+    
+    return base_combinations * modifier_multiplier
+
+def generate_base_combinations(words, min_length, max_length, word_start=None, word_end=None):
+    """Generator for base word combinations"""
+    max_len = max_length if max_length else len(words) + 1
+    for length in range(1, len(words) + 1):
+        for combo in product(words, repeat=length):
+            combined = ''.join(combo)
+            if len(combined) >= min_length and len(combined) <= max_len:
+                if word_start:
+                    combined = word_start + combined
+                if word_end:
+                    combined = combined + word_end
+                yield combined
+
+def apply_modifications(word, modifiers):
+    """Apply modifications in a specific order"""
+    results = [word]  # Start with original word
+    modified = []
+
+    # First apply case modifications
+    if modifiers.get('uppercase'):
+        modified.append(word.upper())
+    if modifiers.get('capitalize'):
+        modified.append(word.capitalize())
+    results.extend(modified)
+
+    # Then apply reverse modifications
+    if any([modifiers.get('reverse'), modifiers.get('reverse_capitalize'), modifiers.get('reverse_upper')]):
         reversed_word = word[::-1]
-        if reverse:
-            results.append(reversed_word)
-        if reverse_capitalize:
-            results.append(reversed_word.capitalize())
-        if reverse_upper:
-            results.append(reversed_word.upper())
-    
-    if uppercase:
-        results.append(word.upper())
-    if capitalize:
-        results.append(word.capitalize())
-    
-    # Apply leet mode if requested
-    if leet:
-        results.append(leet_convert(word))
-        # Apply leet to all modified versions
-        modified_results = results.copy()
-        for modified_word in modified_results:
-            results.append(leet_convert(modified_word))
-    
-    return list(dict.fromkeys(results))  # Remove duplicates while preserving order
+        reverse_results = [reversed_word]
+        if modifiers.get('reverse_capitalize'):
+            reverse_results.append(reversed_word.capitalize())
+        if modifiers.get('reverse_upper'):
+            reverse_results.append(reversed_word.upper())
+        results.extend(reverse_results)
+
+    # Finally apply leet speak
+    if modifiers.get('leet'):
+        leet_results = [leet_convert(w) for w in results]
+        results.extend(leet_results)
+
+    return results
+
+def write_unique(file, word, seen):
+    """Write word to file if not seen before"""
+    if word not in seen:
+        seen.add(word)
+        file.write(word + '\n')
+        return True
+    return False
 
 def generate_and_save_combinations(lst, filename, min_length=1, max_length=None, uppercase=False, capitalize=False, 
                                  reverse=False, reverse_capitalize=False, reverse_upper=False, leet=False,
                                  word_start=None, word_end=None):
     try:
-        # First, generate combinations of whole words
-        words = lst.copy()
-        total_combinations = 0
-        
-        # Calculate combinations for whole words and their combinations
-        word_combinations = []
-        for length in range(1, len(lst) + 1):
-            for combo in product(words, repeat=length):
-                combined = ''.join(combo)
-                if len(combined) >= min_length and (max_length is None or len(combined) <= max_length):
-                    # Apply word start/end if specified
-                    modified_word = combined
-                    if word_start:
-                        modified_word = word_start + modified_word
-                    if word_end:
-                        modified_word = modified_word + word_end
-                    word_combinations.append(modified_word)
-        
-        # Calculate total combinations including case modifications
-        total_combinations = len(word_combinations)
-        if uppercase or capitalize or reverse or reverse_capitalize or reverse_upper or leet:
-            total_combinations *= 2  # At least double for each modifier
+        # Create modifiers dictionary
+        modifiers = {
+            'uppercase': uppercase,
+            'capitalize': capitalize,
+            'reverse': reverse,
+            'reverse_capitalize': reverse_capitalize,
+            'reverse_upper': reverse_upper,
+            'leet': leet
+        }
+
+        # Calculate total combinations
+        total_combinations = calculate_total_combinations(len(lst), min_length, max_length, modifiers)
 
         with open(filename, 'w', encoding='utf-8') as file:
             progress_bar = tqdm(total=total_combinations,
@@ -95,31 +127,32 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
                               smoothing=0.3)
             
             start_time = time.time()
+            seen = set()
             
-            # Process all word combinations
-            seen = set()  # To avoid duplicates
-            for word in word_combinations:
-                # Always write the original word first
-                if word not in seen:
-                    seen.add(word)
-                    file.write(word + '\n')
+            # Generate and process combinations
+            for base_word in generate_base_combinations(lst, min_length, max_length, word_start, word_end):
+                # Write original word
+                if write_unique(file, base_word, seen):
                     progress_bar.update(1)
                 
-                # Then apply case modifiers
-                modified_words = apply_case_modifiers(word, uppercase, capitalize, reverse, 
-                                                   reverse_capitalize, reverse_upper, leet)
-                for mword in modified_words:
-                    if mword not in seen:  # Avoid duplicates
-                        seen.add(mword)
-                        file.write(mword + '\n')
+                # Apply modifications and write
+                for modified_word in apply_modifications(base_word, modifiers):
+                    if write_unique(file, modified_word, seen):
                         progress_bar.update(1)
+            
+            # Update progress bar to 100% if needed
+            if progress_bar.n < total_combinations:
+                progress_bar.update(total_combinations - progress_bar.n)
             
             progress_bar.close()
             end_time = time.time()
             elapsed_time = end_time - start_time
+
+            # Print statistics
             print(f"\n{Fore.GREEN}Combinations saved successfully.{Style.RESET_ALL}")
             print(f"{Fore.CYAN}Total combinations generated:{Style.RESET_ALL} {Fore.YELLOW}{len(seen):,}{Style.RESET_ALL}")
             print(f"{Fore.CYAN}Processing time:{Style.RESET_ALL} {Fore.YELLOW}{elapsed_time:.2f}{Style.RESET_ALL} seconds")
+            print(f"{Fore.CYAN}Memory usage:{Style.RESET_ALL} {Fore.YELLOW}{sys.getsizeof(seen) / (1024*1024):.2f}{Style.RESET_ALL} MB")
             print(f"{Fore.CYAN}File location:{Style.RESET_ALL} {Fore.YELLOW}{os.path.abspath(filename)}{Style.RESET_ALL}")
             
     except PermissionError:
