@@ -1,4 +1,6 @@
 """Tests for the standalone PassGenerator tool."""
+import gzip
+
 import PassGenerator as pg
 
 
@@ -107,3 +109,24 @@ def test_max_length_is_a_character_bound():
     combos = list(pg.generate_base_combinations(["ab", "c"], 1, 3))
     assert all(len(c) <= 3 for c in combos)
     assert "abab" not in combos  # 4 chars, excluded
+
+
+def test_gzip_output_roundtrip(tmp_path):
+    out = tmp_path / "combos.txt.gz"
+    pg.generate_and_save_combinations(["a", "b"], str(out), min_length=1, max_length=None, use_gzip=True)
+    with gzip.open(out, "rt", encoding="utf-8") as fh:
+        lines = [ln for ln in fh.read().splitlines() if ln]
+    assert set(lines) == {"a", "b", "aa", "ab", "ba", "bb"}
+
+
+def test_gzip_autodetected_by_extension(tmp_path):
+    out = tmp_path / "combos.gz"  # no use_gzip flag, detected from .gz suffix
+    pg.generate_and_save_combinations(["x"], str(out), min_length=1, max_length=None)
+    with gzip.open(out, "rt", encoding="utf-8") as fh:
+        assert "x" in fh.read()
+
+
+def test_large_combination_warning(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(pg, "LARGE_COMBINATION_WARNING", 5)
+    pg.generate_and_save_combinations(["a", "b", "c"], str(tmp_path / "o.txt"), min_length=1, max_length=None)
+    assert "Warning" in capsys.readouterr().out

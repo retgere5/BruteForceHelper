@@ -1,5 +1,6 @@
 import sys
 import time
+import gzip
 from tqdm import tqdm
 from itertools import product
 import argparse
@@ -8,6 +9,15 @@ from colorama import init, Fore, Style
 
 # Initialize colorama
 init(autoreset=True)
+
+# Combination estimate above which a heads-up is printed before generating
+LARGE_COMBINATION_WARNING = 5_000_000
+
+def open_output(filename, use_gzip):
+    """Open the output file, gzip-compressed when requested or when it ends in .gz."""
+    if use_gzip or filename.endswith('.gz'):
+        return gzip.open(filename, 'wt', encoding='utf-8')
+    return open(filename, 'w', encoding='utf-8')
 
 def leet_convert(word):
     leet_dict = {
@@ -114,9 +124,9 @@ def write_unique(file, word, seen):
         return True
     return False
 
-def generate_and_save_combinations(lst, filename, min_length=1, max_length=None, uppercase=False, capitalize=False, 
+def generate_and_save_combinations(lst, filename, min_length=1, max_length=None, uppercase=False, capitalize=False,
                                  reverse=False, reverse_capitalize=False, reverse_upper=False, leet=False,
-                                 word_start=None, word_end=None):
+                                 word_start=None, word_end=None, use_gzip=False):
     try:
         # Create modifiers dictionary
         modifiers = {
@@ -131,7 +141,12 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
         # Calculate total combinations
         total_combinations = calculate_total_combinations(lst, min_length, max_length, modifiers)
 
-        with open(filename, 'w', encoding='utf-8') as file:
+        # Warn before a very large run
+        if total_combinations > LARGE_COMBINATION_WARNING:
+            print(f"{Fore.YELLOW}Warning: about {total_combinations:,} combinations estimated; "
+                  f"this may take a while and use significant disk space.{Style.RESET_ALL}")
+
+        with open_output(filename, use_gzip) as file:
             progress_bar = tqdm(total=total_combinations,
                               desc=f'{Fore.CYAN}Processing{Style.RESET_ALL}',
                               unit=f' {Fore.GREEN}combinations{Style.RESET_ALL}',
@@ -248,7 +263,11 @@ def main():
                       help='Add prefix to each word')
     parser.add_argument('-we', '--word-end',
                       help='Add suffix to each word')
-    
+
+    # Output arguments
+    parser.add_argument('-z', '--gzip', action='store_true',
+                      help='Write gzip-compressed output (.gz)')
+
     # If no parameters are provided
     if len(sys.argv) == 1:
         print(f"\n{Fore.GREEN}=== Password Combination Generator ==={Style.RESET_ALL}")
@@ -274,11 +293,17 @@ def main():
         if args.max_length is not None and args.min_length > args.max_length:
             print(f"{Fore.RED}Error: Minimum length cannot be greater than maximum length.{Style.RESET_ALL}")
             return
-            
+
+        # Resolve the output name: append .gz when compressing without the suffix
+        use_gzip = args.gzip or args.output.endswith('.gz')
+        output = args.output
+        if use_gzip and not output.endswith('.gz'):
+            output += '.gz'
+
         generate_and_save_combinations(
-            args.words, 
-            args.output, 
-            args.min_length, 
+            args.words,
+            output,
+            args.min_length,
             args.max_length,
             uppercase=args.AB,
             capitalize=args.Ab,
@@ -287,7 +312,8 @@ def main():
             reverse_upper=args.BA,
             leet=args.L337,
             word_start=args.word_start,
-            word_end=args.word_end
+            word_end=args.word_end,
+            use_gzip=use_gzip
         )
         
     except Exception as e:
