@@ -265,8 +265,6 @@ python PassGenerator.py -w "@" "#" "$" "%" -o special_chars.txt
   * Disk-based deduplication for very large runs
 * 💾 File handling:
   * PassGenerator resume capability
-* 📊 Enhanced progress tracking:
-  * Live memory usage indicator
 
 ## ⚠️ Disclaimer
 

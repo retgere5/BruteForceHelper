@@ -211,3 +211,12 @@ def test_no_dedup_via_cli(tmp_path, monkeypatch):
     pg.main()
     lines = [ln for ln in out.read_text(encoding="utf-8").splitlines() if ln]
     assert len(lines) > len(set(lines))
+
+
+def test_live_memory_indicator_runs(tmp_path, monkeypatch):
+    # A tiny refresh interval trips the indicator; generation must still succeed.
+    monkeypatch.setattr(pg, "MEMORY_INDICATOR_INTERVAL", 2)
+    out = tmp_path / "o.txt"
+    pg.generate_and_save_combinations(["a", "b", "c"], str(out), min_length=1, max_length=None)
+    lines = [ln for ln in out.read_text(encoding="utf-8").splitlines() if ln]
+    assert len(lines) > 0 and len(lines) == len(set(lines))

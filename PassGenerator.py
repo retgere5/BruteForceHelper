@@ -21,6 +21,9 @@ MIN_FREE_DISK_BYTES = 100 * 1024 * 1024  # 100 MB
 # Warn once when the in-memory dedup set grows past this size
 MEMORY_WARNING_BYTES = 512 * 1024 * 1024  # 512 MB
 
+# How often (in written combinations) to refresh the live memory indicator
+MEMORY_INDICATOR_INTERVAL = 100_000
+
 def check_disk_space(path):
     """Free bytes on the filesystem that holds `path`'s directory, or None if unknown."""
     try:
@@ -221,6 +224,12 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
 
                     if dedup:
                         seen_bytes += sys.getsizeof(word)
+
+                        # Live memory indicator in the progress bar (cheap: periodic)
+                        if written % MEMORY_INDICATOR_INTERVAL == 0:
+                            progress_bar.set_postfix_str(
+                                f"mem ~{(sys.getsizeof(seen) + seen_bytes) / (1024*1024):.0f}MB")
+
                         # Total dedup memory = set container + stored strings. Only
                         # measured while it can still change an outcome, to keep the
                         # per-item cost off large unbounded runs.
