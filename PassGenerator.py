@@ -18,6 +18,9 @@ LARGE_COMBINATION_WARNING = 5_000_000
 # Warn when the output location has less free space than this
 MIN_FREE_DISK_BYTES = 100 * 1024 * 1024  # 100 MB
 
+# Warn once when the in-memory dedup set grows past this size
+MEMORY_WARNING_BYTES = 512 * 1024 * 1024  # 512 MB
+
 def check_disk_space(path):
     """Free bytes on the filesystem that holds `path`'s directory, or None if unknown."""
     try:
@@ -146,7 +149,7 @@ def write_unique(file, word, seen):
 
 def generate_and_save_combinations(lst, filename, min_length=1, max_length=None, uppercase=False, capitalize=False,
                                  reverse=False, reverse_capitalize=False, reverse_upper=False, leet=False,
-                                 word_start=None, word_end=None, use_gzip=False, limit=None):
+                                 word_start=None, word_end=None, use_gzip=False, limit=None, max_memory_mb=None):
     try:
         # Create modifiers dictionary
         modifiers = {
@@ -189,7 +192,10 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
             
             start_time = time.time()
             seen = set()
-            reached_limit = False
+            seen_bytes = 0
+            memory_warned = False
+            stop = False
+            max_memory_bytes = max_memory_mb * 1024 * 1024 if max_memory_mb else None
 
             # Generate and process combinations
             for base_word in generate_base_combinations(lst, min_length, max_length, word_start, word_end):
@@ -197,10 +203,29 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
                 for word in apply_modifications(base_word, modifiers):
                     if write_unique(file, word, seen):
                         progress_bar.update(1)
+                        seen_bytes += sys.getsizeof(word)
+
                         if limit and len(seen) >= limit:
-                            reached_limit = True
+                            stop = True
                             break
-                if reached_limit:
+
+                        # Total dedup memory = set container + stored strings. Only
+                        # measured while it can still change an outcome, to keep the
+                        # per-item cost off large unbounded runs.
+                        if max_memory_bytes or not memory_warned:
+                            used_bytes = sys.getsizeof(seen) + seen_bytes
+                            if not memory_warned and used_bytes >= MEMORY_WARNING_BYTES:
+                                memory_warned = True
+                                progress_bar.clear()
+                                print(f"{Fore.YELLOW}Warning: the dedup set is holding ~"
+                                      f"{used_bytes / (1024*1024):.0f} MB in memory.{Style.RESET_ALL}")
+                            if max_memory_bytes and used_bytes >= max_memory_bytes:
+                                stop = True
+                                progress_bar.clear()
+                                print(f"{Fore.YELLOW}Memory limit reached (~"
+                                      f"{used_bytes / (1024*1024):.0f} MB); stopping generation.{Style.RESET_ALL}")
+                                break
+                if stop:
                     break
 
             # Update progress bar to 100% if needed
@@ -215,7 +240,7 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
             print(f"\n{Fore.GREEN}Combinations saved successfully.{Style.RESET_ALL}")
             print(f"{Fore.CYAN}Total combinations generated:{Style.RESET_ALL} {Fore.YELLOW}{len(seen):,}{Style.RESET_ALL}")
             print(f"{Fore.CYAN}Processing time:{Style.RESET_ALL} {Fore.YELLOW}{elapsed_time:.2f}{Style.RESET_ALL} seconds")
-            print(f"{Fore.CYAN}Memory usage:{Style.RESET_ALL} {Fore.YELLOW}{sys.getsizeof(seen) / (1024*1024):.2f}{Style.RESET_ALL} MB")
+            print(f"{Fore.CYAN}Memory usage:{Style.RESET_ALL} {Fore.YELLOW}{(sys.getsizeof(seen) + seen_bytes) / (1024*1024):.2f}{Style.RESET_ALL} MB")
             print(f"{Fore.CYAN}File location:{Style.RESET_ALL} {Fore.YELLOW}{os.path.abspath(filename)}{Style.RESET_ALL}")
             
     except PermissionError:
@@ -313,6 +338,8 @@ def main():
                       help='Write gzip-compressed output (.gz)')
     parser.add_argument('--limit', type=int,
                       help='Stop after generating this many unique combinations')
+    parser.add_argument('--max-memory', type=int, dest='max_memory',
+                      help='Stop when the in-memory dedup set exceeds this many MB')
 
     # Config values become defaults; explicit CLI arguments still override them
     parser.set_defaults(**config)
@@ -347,6 +374,10 @@ def main():
             print(f"{Fore.RED}Error: Limit cannot be less than 1.{Style.RESET_ALL}")
             return
 
+        if args.max_memory is not None and args.max_memory < 1:
+            print(f"{Fore.RED}Error: Max memory cannot be less than 1 MB.{Style.RESET_ALL}")
+            return
+
         # Resolve the output name: append .gz when compressing without the suffix
         use_gzip = args.gzip or args.output.endswith('.gz')
         output = args.output
@@ -367,7 +398,8 @@ def main():
             word_start=args.word_start,
             word_end=args.word_end,
             use_gzip=use_gzip,
-            limit=args.limit
+            limit=args.limit,
+            max_memory_mb=args.max_memory
         )
         
     except Exception as e:

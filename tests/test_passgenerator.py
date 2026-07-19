@@ -174,3 +174,17 @@ def test_low_disk_space_warning(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(pg, "check_disk_space", lambda path: 1024)  # pretend 1 KB free
     pg.generate_and_save_combinations(["a"], str(tmp_path / "o.txt"), min_length=1, max_length=None)
     assert "low free disk space" in capsys.readouterr().out.lower()
+
+
+def test_memory_warning(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(pg, "MEMORY_WARNING_BYTES", 5)  # trip on the first word
+    pg.generate_and_save_combinations(["a", "b"], str(tmp_path / "o.txt"), min_length=1, max_length=None)
+    assert "holding" in capsys.readouterr().out.lower()
+
+
+def test_max_memory_stops_early(tmp_path):
+    words = [chr(ord('a') + i) for i in range(30)]  # unbounded: 30 + 900 + 27000 combos
+    out = tmp_path / "o.txt"
+    pg.generate_and_save_combinations(words, str(out), min_length=1, max_length=None, max_memory_mb=1)
+    lines = [ln for ln in out.read_text(encoding="utf-8").splitlines() if ln]
+    assert 0 < len(lines) < 27930  # a 1 MB cap must stop before exhausting the space
