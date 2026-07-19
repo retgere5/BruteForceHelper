@@ -13,7 +13,6 @@ A powerful collection of tools for password analysis and wordlist optimization. 
   * [PassGenerator](#-passgenerator)
   * [WordlistOptimizer](#-wordlistoptimizer)
 * [Usage Examples](#-usage-examples)
-* [Upcoming Features](#-upcoming-features)
 * [Disclaimer](#-disclaimer)
 * [License](#-license)
 
@@ -111,6 +110,7 @@ python PassGenerator.py -w [words/chars] [options]
 * `--max-memory`: Stop when the in-memory dedup set exceeds this many MB
 * `--no-dedup`: Skip deduplication (constant memory; output may contain repeats)
 * `--resume`: Checkpoint the run so it can be resumed if interrupted
+* `--disk-dedup`: Deduplicate on disk via SQLite (bounded memory, slower)
 
 #### Examples:
 
@@ -146,6 +146,9 @@ python PassGenerator.py -w a b c --no-dedup
 
 # Resumable run: if interrupted (Ctrl+C), re-run the same command to continue
 python PassGenerator.py -w a b c d --resume -o big.txt
+
+# Deduplicate on disk for sets too large for RAM (bounded memory, slower)
+python PassGenerator.py -w a b c d e --disk-dedup
 
 # Compressed output (.gz)
 python PassGenerator.py -w test -AB -z -o wordlist.txt
@@ -262,13 +265,6 @@ python PassGenerator.py -w "@" "#" "$" "%" -o special_chars.txt
 * Smart recommendations based on wordlist size
 * Real-time filter effectiveness tracking
 </details>
-
-## 🔜 Upcoming Features
-
-### 🆕 Planned Improvements
-
-* 🚀 Performance optimizations:
-  * Disk-based deduplication for very large runs
 
 ## ⚠️ Disclaimer
 
