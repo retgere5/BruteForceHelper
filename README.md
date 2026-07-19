@@ -106,6 +106,7 @@ python PassGenerator.py -w [words/chars] [options]
 * `-ws, --word-start`: Add prefix to words
 * `-we, --word-end`: Add suffix to words
 * `-z, --gzip`: Write gzip-compressed output (`.gz`)
+* `-c, --config`: Load options from a JSON config file (CLI arguments override it)
 
 #### Examples:
 
@@ -133,6 +134,23 @@ python PassGenerator.py -w retgere 5 Prophet -m 6 -M 12 -AB -ba -Ab -Ba
 # Compressed output (.gz)
 python PassGenerator.py -w test -AB -z -o wordlist.txt
 # Writes wordlist.txt.gz
+
+# From a JSON config file (CLI args still override individual values)
+python PassGenerator.py -c config.json
+```
+
+Example `config.json` for PassGenerator:
+
+```json
+{
+  "words": ["test", "admin"],
+  "min_length": 4,
+  "max_length": 12,
+  "AB": true,
+  "L337": true,
+  "output": "wordlist.txt",
+  "gzip": true
+}
 ```
 
 ### 🔍 WordlistOptimizer
@@ -140,7 +158,23 @@ python PassGenerator.py -w test -AB -z -o wordlist.txt
 Clean and optimize your wordlists with advanced filtering options.
 
 ```bash
+# Interactive
 python WordlistFixer.py
+
+# Non-interactive, from a JSON config
+python WordlistFixer.py --config config.json --lang en
+```
+
+Example `config.json` for WordlistOptimizer (missing filter keys default to off; `input` is required):
+
+```json
+{
+  "input": "rockyou.txt",
+  "output": "cleaned.txt.gz",
+  "min_length_filter": true,
+  "repetitive_chars": true,
+  "keep_stats": true
+}
 ```
 
 #### Interactive Setup:
@@ -224,7 +258,6 @@ python PassGenerator.py -w "@" "#" "$" "%" -o special_chars.txt
 * 🛡️ Error handling:
   * Memory overflow protection
 * ⚙️ Configuration:
-  * Custom configuration files
   * Combination limit settings
 
 ## ⚠️ Disclaimer
