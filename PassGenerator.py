@@ -24,11 +24,25 @@ def leet_convert(word):
     }
     return ''.join(leet_dict.get(char, char) for char in word)
 
-def calculate_total_combinations(word_count, min_length, max_length, modifiers):
-    """Calculate total number of combinations including all modifications"""
-    length_range = range(min_length, max_length + 1 if max_length else word_count + 1)
-    base_combinations = sum(word_count ** i for i in length_range)
-    
+def max_token_count(words, max_length):
+    """How many tokens to combine.
+
+    When ``max_length`` (a character length) is given, allow enough tokens to
+    reach it: each token contributes at least the shortest word's length, so
+    ``max_length // shortest_word`` tokens can still fit. When it is not given,
+    fall back to the number of input words (the tool's legacy default).
+    """
+    if max_length:
+        shortest = min((len(w) for w in words), default=1) or 1
+        return max(1, max_length // shortest)
+    return len(words)
+
+def calculate_total_combinations(words, min_length, max_length, modifiers):
+    """Estimate the number of combinations (drives the progress bar only)."""
+    word_count = len(words)
+    max_tokens = max_token_count(words, max_length)
+    base_combinations = sum(word_count ** i for i in range(1, max_tokens + 1))
+
     # Calculate modifier multiplier
     modifier_multiplier = 1
     if modifiers.get('uppercase'):
@@ -43,16 +57,20 @@ def calculate_total_combinations(word_count, min_length, max_length, modifiers):
         modifier_multiplier += 1
     if modifiers.get('leet'):
         modifier_multiplier *= 2
-    
+
     return base_combinations * modifier_multiplier
 
 def generate_base_combinations(words, min_length, max_length, word_start=None, word_end=None):
-    """Generator for base word combinations"""
-    max_len = max_length if max_length else len(words) + 1
-    for length in range(1, len(words) + 1):
+    """Generator for base word combinations.
+
+    ``min_length``/``max_length`` bound the *character length* of each combined
+    string; the token count is bounded by :func:`max_token_count`.
+    """
+    max_tokens = max_token_count(words, max_length)
+    for length in range(1, max_tokens + 1):
         for combo in product(words, repeat=length):
             combined = ''.join(combo)
-            if len(combined) >= min_length and len(combined) <= max_len:
+            if len(combined) >= min_length and (not max_length or len(combined) <= max_length):
                 if word_start:
                     combined = word_start + combined
                 if word_end:
@@ -111,7 +129,7 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
         }
 
         # Calculate total combinations
-        total_combinations = calculate_total_combinations(len(lst), min_length, max_length, modifiers)
+        total_combinations = calculate_total_combinations(lst, min_length, max_length, modifiers)
 
         with open(filename, 'w', encoding='utf-8') as file:
             progress_bar = tqdm(total=total_combinations,
