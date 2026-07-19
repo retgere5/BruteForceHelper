@@ -105,6 +105,7 @@ python PassGenerator.py -w [words/chars] [options]
 * `-L337`: Convert to leet speak
 * `-ws, --word-start`: Add prefix to words
 * `-we, --word-end`: Add suffix to words
+* `-z, --gzip`: Write gzip-compressed output (`.gz`)
 
 #### Examples:
 
@@ -128,6 +129,10 @@ python PassGenerator.py -w test user -m 4 -M 8 -AB -L337
 # Multiple features
 python PassGenerator.py -w retgere 5 Prophet -m 6 -M 12 -AB -ba -Ab -Ba
 # Output: retgere, RETGERE, eregter, Retgere, retgere5, Prophet, ...
+
+# Compressed output (.gz)
+python PassGenerator.py -w test -AB -z -o wordlist.txt
+# Writes wordlist.txt.gz
 ```
 
 ### 🔍 WordlistOptimizer
@@ -141,7 +146,7 @@ python WordlistFixer.py
 #### Interactive Setup:
 
 1. 🌍 Select your language (English/Turkish)
-2. 📁 Select input/output files
+2. 📁 Select input/output files (use a `.gz` name for gzip-compressed input or output)
 3. ⚙️ Choose filtering options:
    * Length filters
    * Pattern filters
@@ -211,16 +216,13 @@ python PassGenerator.py -w "@" "#" "$" "%" -o special_chars.txt
   * Optimized memory usage
   * Streaming / disk-based deduplication for very large runs
 * 💾 File handling:
-  * Compressed output (.gz format)
-  * Resume capability
+  * PassGenerator resume capability
   * Disk space checks
 * 📊 Enhanced progress tracking:
-  * Estimated time remaining
   * Memory usage indicator
   * Wordlist statistics
 * 🛡️ Error handling:
   * Memory overflow protection
-  * Large combination warnings
 * ⚙️ Configuration:
   * Custom configuration files
   * Combination limit settings
