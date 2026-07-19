@@ -69,6 +69,18 @@ cd BruteForceHelper
 pip install -r requirements.txt
 ```
 
+### 🧪 Running Tests
+
+```bash
+# Install development dependencies (adds pytest)
+pip install -r requirements-dev.txt
+
+# Run the test suite
+pytest
+```
+
+> WordlistOptimizer's interactive `q`/`c` stop/checkpoint keys use `msvcrt` and are Windows-only; the rest of the tool (including filtering and multi-processing) runs on Linux and macOS as well.
+
 ## 🛠️ Tools
 
 ### 🔑 PassGenerator
@@ -196,9 +208,8 @@ python PassGenerator.py -w "@" "#" "$" "%" -o special_chars.txt
 ### 🆕 Planned Improvements
 
 * 🚀 Performance optimizations:
-  * Generator-based combination creation
   * Optimized memory usage
-  * Parallel processing support
+  * Streaming / disk-based deduplication for very large runs
 * 💾 File handling:
   * Compressed output (.gz format)
   * Resume capability
@@ -213,10 +224,6 @@ python PassGenerator.py -w "@" "#" "$" "%" -o special_chars.txt
 * ⚙️ Configuration:
   * Custom configuration files
   * Combination limit settings
-* 🎯 Code improvements:
-  * Class-based architecture
-  * Modular function design
-  * Enhanced error handling
 
 ## ⚠️ Disclaimer
 
