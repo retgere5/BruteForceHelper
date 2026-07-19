@@ -36,13 +36,20 @@ A powerful collection of tools for password analysis and wordlist optimization. 
   * `-ws`: Add prefix to words
   * `-we`: Add suffix to words
 * 🔠 Leet speak conversion (`-L337`)
+* 🗜️ Optional gzip-compressed output (`-z`)
+* ⚙️ JSON config files (`-c`)
+* 🧮 Memory controls: `--limit`, `--max-memory`, `--no-dedup`, `--disk-dedup`
+* 🔄 Resumable runs (`--resume`)
 * 🎨 Colorful interactive UI
 * 🚫 Duplicate prevention
 * 📝 UTF-8 encoding support
 
-### �� WordlistOptimizer
+### 🔍 WordlistOptimizer
 
 * 🎯 Multiple filtering options
+* 🔬 Wordlist analysis mode (`--analyze`)
+* ⚙️ Non-interactive config mode (`--config`)
+* 🗜️ Transparent gzip input/output (`.gz`)
 * 📈 Real-time statistics
 * ⏸️ Checkpoint system
 * 💪 Multi-processing support

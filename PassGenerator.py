@@ -434,6 +434,7 @@ def print_usage_examples():
     print("     python PassGenerator.py -w a b c -o output.txt -m 2 -M 4 -AB -L337 -ws pre_ -we _post")
     print(f"\n{Fore.CYAN}Note: Use quotes for characters containing spaces:{Style.RESET_ALL}")
     print('     python PassGenerator.py -w "123" "abc" "@#$"')
+    print(f"\n{Fore.CYAN}Run with -h for all options (compression, config, limits, resume, disk-dedup).{Style.RESET_ALL}")
 
 def main():
     # Pre-parse --config so it can supply defaults for the real parser
