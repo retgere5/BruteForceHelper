@@ -4,6 +4,7 @@ import gzip
 import json
 import shutil
 import hashlib
+import sqlite3
 from tqdm import tqdm
 from itertools import product
 import argparse
@@ -27,6 +28,9 @@ MEMORY_INDICATOR_INTERVAL = 100_000
 
 # How often (in base words) to persist a resume checkpoint
 CHECKPOINT_INTERVAL = 10_000
+
+# How often (in written combinations) to commit the on-disk dedup database
+DISK_DEDUP_COMMIT_INTERVAL = 50_000
 
 def check_disk_space(path):
     """Free bytes on the filesystem that holds `path`'s directory, or None if unknown."""
@@ -190,8 +194,14 @@ def write_unique(file, word, seen):
 def generate_and_save_combinations(lst, filename, min_length=1, max_length=None, uppercase=False, capitalize=False,
                                  reverse=False, reverse_capitalize=False, reverse_upper=False, leet=False,
                                  word_start=None, word_end=None, use_gzip=False, limit=None, max_memory_mb=None,
-                                 dedup=True, resume=False):
+                                 dedup=True, resume=False, disk_dedup=False):
+    disk_conn = None
+    db_path = None
     try:
+        if disk_dedup and resume:
+            print(f"{Fore.RED}Error: --resume is not supported with --disk-dedup.{Style.RESET_ALL}")
+            return
+
         # Create modifiers dictionary
         modifiers = {
             'uppercase': uppercase,
@@ -244,6 +254,17 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
                     written = checkpoint['written']
                 print(f"{Fore.CYAN}Resuming from {written:,} combinations.{Style.RESET_ALL}")
 
+        # On-disk dedup: use a temporary SQLite index instead of an in-memory set
+        if disk_dedup:
+            db_path = filename + '.dedup.sqlite'
+            if os.path.exists(db_path):
+                os.remove(db_path)
+            disk_conn = sqlite3.connect(db_path)
+            disk_conn.execute("PRAGMA journal_mode = OFF")
+            disk_conn.execute("PRAGMA synchronous = OFF")
+            disk_conn.execute("CREATE TABLE words (w TEXT PRIMARY KEY)")
+            disk_cur = disk_conn.cursor()
+
         with open_output(filename, use_gzip, append=resuming) as file:
             progress_bar = tqdm(total=total_combinations,
                               initial=written,
@@ -273,7 +294,12 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
 
                     # apply_modifications() yields the original word first, then its variants
                     for word in apply_modifications(base_word, modifiers):
-                        if dedup:
+                        if disk_dedup:
+                            disk_cur.execute("INSERT OR IGNORE INTO words(w) VALUES(?)", (word,))
+                            is_new = disk_cur.rowcount == 1
+                            if is_new:
+                                file.write(word + '\n')
+                        elif dedup:
                             is_new = write_unique(file, word, seen)
                         else:
                             # Constant-memory streaming: write everything, keep no set
@@ -289,7 +315,10 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
                             stop = True
                             break
 
-                        if dedup:
+                        if disk_dedup:
+                            if written % DISK_DEDUP_COMMIT_INTERVAL == 0:
+                                disk_conn.commit()
+                        elif dedup:
                             seen_bytes += sys.getsizeof(word)
 
                             # Live memory indicator in the progress bar (cheap: periodic)
@@ -358,6 +387,19 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
         print(f"{Fore.RED}File operation error: {e}{Style.RESET_ALL}")
     except Exception as e:
         print(f"{Fore.RED}An unexpected error occurred: {e}{Style.RESET_ALL}")
+    finally:
+        # Always tear down the temporary on-disk dedup database
+        if disk_conn is not None:
+            try:
+                disk_conn.commit()
+                disk_conn.close()
+            except Exception:
+                pass
+        if db_path and os.path.exists(db_path):
+            try:
+                os.remove(db_path)
+            except OSError:
+                pass
 
 def print_usage_examples():
     print(f"\n{Fore.GREEN}=== Password Combination Generator ==={Style.RESET_ALL}")
@@ -449,8 +491,11 @@ def main():
                       help='Stop after generating this many unique combinations')
     parser.add_argument('--max-memory', type=int, dest='max_memory',
                       help='Stop when the in-memory dedup set exceeds this many MB')
-    parser.add_argument('--no-dedup', action='store_true', dest='no_dedup',
+    dedup_group = parser.add_mutually_exclusive_group()
+    dedup_group.add_argument('--no-dedup', action='store_true', dest='no_dedup',
                       help='Do not remove duplicates (constant memory, may repeat lines)')
+    dedup_group.add_argument('--disk-dedup', action='store_true', dest='disk_dedup',
+                      help='Deduplicate on disk via SQLite (bounded memory, slower)')
     parser.add_argument('--resume', action='store_true',
                       help='Checkpoint the run and resume it if interrupted')
 
@@ -491,6 +536,10 @@ def main():
             print(f"{Fore.RED}Error: Max memory cannot be less than 1 MB.{Style.RESET_ALL}")
             return
 
+        if args.disk_dedup and args.resume:
+            print(f"{Fore.RED}Error: --resume cannot be combined with --disk-dedup.{Style.RESET_ALL}")
+            return
+
         # Resolve the output name: append .gz when compressing without the suffix
         use_gzip = args.gzip or args.output.endswith('.gz')
         output = args.output
@@ -514,7 +563,8 @@ def main():
             limit=args.limit,
             max_memory_mb=args.max_memory,
             dedup=not args.no_dedup,
-            resume=args.resume
+            resume=args.resume,
+            disk_dedup=args.disk_dedup
         )
         
     except Exception as e:

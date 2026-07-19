@@ -38,6 +38,7 @@ ENV/
 checkpoint/
 *.checkpoint
 *.pgckpt
+*.dedup.sqlite
 output/
 wordlists/
 

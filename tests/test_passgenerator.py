@@ -268,3 +268,27 @@ def test_resume_completes_after_interrupt(tmp_path, monkeypatch):
     resumed = sorted(ln for ln in out.read_text(encoding="utf-8").splitlines() if ln)
     assert resumed == expected
     assert not os.path.exists(str(out) + ".pgckpt")
+
+
+def test_disk_dedup_matches_in_memory(tmp_path):
+    words = ["a", "a", "b", "c"]  # duplicate input forces dedup work
+    mem = tmp_path / "mem.txt"
+    disk = tmp_path / "disk.txt"
+    pg.generate_and_save_combinations(words, str(mem), min_length=1, max_length=None)
+    pg.generate_and_save_combinations(words, str(disk), min_length=1, max_length=None, disk_dedup=True)
+    assert disk.read_text(encoding="utf-8").splitlines() == mem.read_text(encoding="utf-8").splitlines()
+    assert not os.path.exists(str(disk) + ".dedup.sqlite")  # temp db cleaned up
+
+
+def test_disk_dedup_no_duplicates(tmp_path):
+    out = tmp_path / "o.txt"
+    pg.generate_and_save_combinations(["a", "a", "b"], str(out), min_length=1, max_length=None, disk_dedup=True)
+    lines = [ln for ln in out.read_text(encoding="utf-8").splitlines() if ln]
+    assert len(lines) == len(set(lines))
+
+
+def test_disk_dedup_and_resume_conflict_is_refused(tmp_path, capsys):
+    out = tmp_path / "o.txt"
+    pg.generate_and_save_combinations(["a"], str(out), min_length=1, max_length=None, disk_dedup=True, resume=True)
+    assert "not supported" in capsys.readouterr().out.lower()
+    assert not out.exists()
