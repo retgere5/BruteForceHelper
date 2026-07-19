@@ -157,6 +157,49 @@ def test_config_run_non_interactive(tmp_path, monkeypatch):
     assert survivors == ["GoodPass9!"]
 
 
+def test_analyze_wordlist_basic(tmp_path):
+    wl = tmp_path / "wl.txt"
+    wl.write_text("123\nabcd\nPass1!\n", encoding="utf-8")
+    stats = wf.analyze_wordlist(str(wl))
+    assert stats["total"] == 3
+    assert stats["min_length"] == 3
+    assert stats["max_length"] == 6
+    assert stats["digit_only"] == 1     # "123"
+    assert stats["alpha_only"] == 1     # "abcd"
+    assert stats["has_upper"] == 1      # "Pass1!"
+    assert stats["has_digit"] == 2      # "123", "Pass1!"
+    assert stats["has_special"] == 1    # "Pass1!"
+
+
+def test_analyze_wordlist_gzip(tmp_path):
+    wl = tmp_path / "wl.txt.gz"
+    with gzip.open(wl, "wt", encoding="utf-8") as f:
+        f.write("aa\nbb\ncc\n")
+    stats = wf.analyze_wordlist(str(wl))
+    assert stats["total"] == 3
+    assert stats["alpha_only"] == 3
+
+
+def test_analyze_cli(tmp_path, monkeypatch, capsys):
+    wl = tmp_path / "wl.txt"
+    wl.write_text("abc\n1234\n", encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["WordlistFixer.py", "--analyze", str(wl), "--lang", "en"])
+    wf.main()
+    out = capsys.readouterr().out
+    assert "Wordlist Analysis" in out
+    assert "Total passwords" in out
+
+
+def test_analysis_labels_exist():
+    keys = ("title", "total", "length", "common_lengths", "composition",
+            "digit_only", "alpha_only", "has_upper", "has_digit", "has_special")
+    for lang in ("tr", "en"):
+        lm = LanguageManager()
+        lm.set_language(lang)
+        for key in keys:
+            assert lm.get_text(key, "analysis")
+
+
 def test_checkpoint_manager_roundtrip(tmp_path):
     cp = tmp_path / "run.checkpoint"
     wf.CheckpointManager(str(cp)).save_checkpoint(100, 100, 40)

@@ -74,6 +74,18 @@ class LanguageManager:
                     "smart_filtering": "Akıllı filtreleme (orta boy)",
                     "format_control": "Format kontrolü (yaygın kalıplar)",
                     "maximum_security": "Maksimum güvenlik (büyük wordlist'ler)"
+                },
+                "analysis": {
+                    "title": "Wordlist Analizi",
+                    "total": "Toplam şifre",
+                    "length": "Uzunluk (min/ort/max)",
+                    "common_lengths": "En sık uzunluklar",
+                    "composition": "Karakter kompozisyonu",
+                    "digit_only": "Sadece rakam",
+                    "alpha_only": "Sadece harf",
+                    "has_upper": "Büyük harf içeren",
+                    "has_digit": "Rakam içeren",
+                    "has_special": "Özel karakter içeren"
                 }
             },
             "en": {
@@ -146,6 +158,18 @@ class LanguageManager:
                     "smart_filtering": "Smart filtering (medium)",
                     "format_control": "Format control (common patterns)",
                     "maximum_security": "Maximum security (large wordlists)"
+                },
+                "analysis": {
+                    "title": "Wordlist Analysis",
+                    "total": "Total passwords",
+                    "length": "Length (min/avg/max)",
+                    "common_lengths": "Most common lengths",
+                    "composition": "Character composition",
+                    "digit_only": "Digits only",
+                    "alpha_only": "Letters only",
+                    "has_upper": "Has uppercase",
+                    "has_digit": "Has digit",
+                    "has_special": "Has special"
                 }
             }
         }

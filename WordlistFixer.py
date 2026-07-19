@@ -314,6 +314,69 @@ def options_from_config(path):
         raise ValueError("config must set 'input' (the wordlist file)")
     return options
 
+def analyze_wordlist(path):
+    """Bir wordlist'i okuyup özet istatistik döndürür (gzip destekli)."""
+    total = 0
+    total_length = 0
+    length_counts = {}
+    digit_only = alpha_only = has_upper = has_lower = has_digit = has_special = 0
+
+    with open_text(path, 'r') as f:
+        for line in f:
+            password = line.rstrip('\n')
+            if not password:
+                continue
+            total += 1
+            length = len(password)
+            total_length += length
+            length_counts[length] = length_counts.get(length, 0) + 1
+            if password.isdigit():
+                digit_only += 1
+            if password.isalpha():
+                alpha_only += 1
+            if any(c.isupper() for c in password):
+                has_upper += 1
+            if any(c.islower() for c in password):
+                has_lower += 1
+            if any(c.isdigit() for c in password):
+                has_digit += 1
+            if any(not c.isalnum() for c in password):
+                has_special += 1
+
+    return {
+        'total': total,
+        'min_length': min(length_counts) if length_counts else 0,
+        'max_length': max(length_counts) if length_counts else 0,
+        'avg_length': (total_length / total) if total else 0,
+        'length_counts': length_counts,
+        'digit_only': digit_only,
+        'alpha_only': alpha_only,
+        'has_upper': has_upper,
+        'has_lower': has_lower,
+        'has_digit': has_digit,
+        'has_special': has_special,
+    }
+
+def display_analysis(stats, ui, language_manager):
+    """analyze_wordlist() çıktısını dile göre çevrili biçimde gösterir."""
+    def label(key):
+        return language_manager.get_text(key, 'analysis')
+
+    total = stats['total']
+    ui.print_header(label('title'))
+    ui.print_info(f"{label('total')}: {total:,}")
+    ui.print_info(
+        f"{label('length')}: {stats['min_length']} / {stats['avg_length']:.1f} / {stats['max_length']}"
+    )
+    top_lengths = sorted(stats['length_counts'].items(), key=lambda item: item[1], reverse=True)[:5]
+    if top_lengths:
+        ui.print_info(f"{label('common_lengths')}: " + ", ".join(f"{length} ({count:,})" for length, count in top_lengths))
+
+    ui.print_header(label('composition'))
+    for key in ('digit_only', 'alpha_only', 'has_upper', 'has_digit', 'has_special'):
+        percentage = (stats[key] / total * 100) if total else 0
+        ui.print_info(f"  {label(key)}: {stats[key]:,} (%{percentage:.1f})")
+
 def main():
     # stdout/stderr'i UnicodeEncodeError'a karşı dayanıklı yap (colorama'dan önce)
     _make_output_encoding_safe()
@@ -322,11 +385,23 @@ def main():
     parser.add_argument('-c', '--config',
                         help='Run non-interactively from a JSON config file')
     parser.add_argument('--lang', choices=['tr', 'en'],
-                        help='Message language when using --config (default: tr)')
+                        help='Message language for --config/--analyze (default: tr)')
+    parser.add_argument('--analyze', metavar='WORDLIST',
+                        help='Analyze a wordlist and print statistics, then exit')
     args = parser.parse_args()
 
     ui_manager = UIManager()
     language_manager = LanguageManager()
+
+    if args.analyze:
+        language_manager.set_language(args.lang or 'tr')
+        try:
+            stats = analyze_wordlist(args.analyze)
+        except Exception as e:
+            ui_manager.print_error(f"Error: {e}")
+            sys.exit(1)
+        display_analysis(stats, ui_manager, language_manager)
+        return
 
     if args.config:
         # Non-interactive: seçenekleri config'ten al
