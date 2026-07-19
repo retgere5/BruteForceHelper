@@ -5,8 +5,12 @@ self.options, and it consumed a dict via attribute access -> AttributeError
 before any filtering happened.
 """
 import gzip
+import json
 import pickle
+import sys
 from types import SimpleNamespace
+
+import pytest
 
 import WordlistFixer as wf
 from modules.language_manager import LanguageManager
@@ -119,6 +123,37 @@ def test_optimizer_gzip_input_and_output(tmp_path):
 
     with gzip.open(outp, "rt", encoding="utf-8") as fh:
         survivors = [ln for ln in fh.read().splitlines() if ln]
+    assert survivors == ["GoodPass9!"]
+
+
+def test_options_from_config_fills_defaults(tmp_path):
+    cfg = tmp_path / "cfg.json"
+    cfg.write_text(json.dumps({"input": "x.txt", "number_only": True}), encoding="utf-8")
+    opts = wf.options_from_config(str(cfg))
+    assert opts["number_only"] is True
+    assert opts["repetitive_chars"] is False   # default filled in
+    assert opts["output"] == "optimized.txt"   # default filled in
+
+
+def test_options_from_config_requires_input(tmp_path):
+    cfg = tmp_path / "cfg.json"
+    cfg.write_text(json.dumps({"number_only": True}), encoding="utf-8")
+    with pytest.raises(ValueError):
+        wf.options_from_config(str(cfg))
+
+
+def test_config_run_non_interactive(tmp_path, monkeypatch):
+    inp = tmp_path / "in.txt"
+    inp.write_text("123456\nGoodPass9!\n", encoding="utf-8")
+    outp = tmp_path / "out.txt"
+    cfg = tmp_path / "cfg.json"
+    cfg.write_text(
+        json.dumps({"input": str(inp), "output": str(outp), "number_only": True}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sys, "argv", ["WordlistFixer.py", "--config", str(cfg), "--lang", "en"])
+    wf.main()
+    survivors = [ln for ln in outp.read_text(encoding="utf-8").splitlines() if ln]
     assert survivors == ["GoodPass9!"]
 
 

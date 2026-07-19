@@ -1,3 +1,4 @@
+import argparse
 import multiprocessing as mp
 from itertools import islice
 import os
@@ -296,25 +297,52 @@ def _make_output_encoding_safe():
         except (AttributeError, ValueError):
             pass
 
+def options_from_config(path):
+    """JSON config dosyasından tam bir seçenek sözlüğü üretir.
+
+    Eksik anahtarlar varsayılanlarla doldurulur; 'input' zorunludur.
+    """
+    with open(path, 'r', encoding='utf-8') as f:
+        config = json.load(f)
+    options = dict(Settings.DEFAULT_FILTERS)
+    options.update({
+        'input': None, 'output': 'optimized.txt',
+        'min_length': None, 'max_length': None, 'keep_stats': False,
+    })
+    options.update(config)
+    if not options.get('input'):
+        raise ValueError("config must set 'input' (the wordlist file)")
+    return options
+
 def main():
     # stdout/stderr'i UnicodeEncodeError'a karşı dayanıklı yap (colorama'dan önce)
     _make_output_encoding_safe()
 
-    # Initialize managers
+    parser = argparse.ArgumentParser(description="Wordlist optimizer / filter")
+    parser.add_argument('-c', '--config',
+                        help='Run non-interactively from a JSON config file')
+    parser.add_argument('--lang', choices=['tr', 'en'],
+                        help='Message language when using --config (default: tr)')
+    args = parser.parse_args()
+
     ui_manager = UIManager()
-    settings = Settings()
     language_manager = LanguageManager()
-    
-    # Language selection
-    selected_lang = language_manager.prompt_language_selection()
-    language_manager.set_language(selected_lang)
-    
-    # Welcome message
-    ui_manager.print_header(language_manager.get_text("welcome"))
-    
-    # Get filter options with translated text
-    options = settings.get_filter_options(language_manager)
-    
+
+    if args.config:
+        # Non-interactive: seçenekleri config'ten al
+        try:
+            options = options_from_config(args.config)
+        except Exception as e:
+            ui_manager.print_error(f"Error loading config: {e}")
+            sys.exit(1)
+        language_manager.set_language(args.lang or 'tr')
+    else:
+        # Interactive: dil seç, filtreleri sor
+        selected_lang = language_manager.prompt_language_selection()
+        language_manager.set_language(selected_lang)
+        ui_manager.print_header(language_manager.get_text("welcome"))
+        options = Settings().get_filter_options(language_manager)
+
     # Process the wordlist with selected options
     try:
         wordlist_optimizer = WordlistOptimizer(options, language_manager)
@@ -324,4 +352,4 @@ def main():
         sys.exit(1)
 
 if __name__ == "__main__":
-    main() 
+    main()

@@ -4,6 +4,15 @@ from typing import Dict, List, Tuple
 from .ui_manager import UIManager
 
 class Settings:
+    # Tüm filtreler varsayılan olarak kapalı
+    DEFAULT_FILTERS = {
+        'min_length_filter': False, 'repetitive_chars': False, 'pattern_repetition': False,
+        'sequential_chars': False, 'keyboard_patterns': False, 'number_only': False,
+        'letter_only': False, 'special_patterns': False, 'single_char_type': False,
+        'year_patterns': False, 'date_patterns': False, 'phone_patterns': False,
+        'common_words': False, 'leet_speak': False,
+    }
+
     def __init__(self):
         self.settings_file = "wordlist_optimizer_settings.json"
         self.ui = UIManager()
@@ -29,23 +38,7 @@ class Settings:
         options = {}
         
         # Set default values for all filters
-        default_filters = {
-            'min_length_filter': False,
-            'repetitive_chars': False,
-            'pattern_repetition': False,
-            'sequential_chars': False,
-            'keyboard_patterns': False,
-            'number_only': False,
-            'letter_only': False,
-            'special_patterns': False,
-            'single_char_type': False,
-            'year_patterns': False,
-            'date_patterns': False,
-            'phone_patterns': False,
-            'common_words': False,
-            'leet_speak': False
-        }
-        options.update(default_filters)
+        options.update(dict(self.DEFAULT_FILTERS))
         
         if last_settings:
             self.ui.print_info(language_manager.get_text('use_last_settings'))
