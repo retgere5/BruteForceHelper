@@ -108,6 +108,7 @@ python PassGenerator.py -w [words/chars] [options]
 * `-z, --gzip`: Write gzip-compressed output (`.gz`)
 * `-c, --config`: Load options from a JSON config file (CLI arguments override it)
 * `--limit`: Stop after generating this many unique combinations
+* `--max-memory`: Stop when the in-memory dedup set exceeds this many MB
 
 #### Examples:
 
@@ -134,6 +135,9 @@ python PassGenerator.py -w retgere 5 Prophet -m 6 -M 12 -AB -ba -Ab -Ba
 
 # Cap the number of unique combinations
 python PassGenerator.py -w a b c --limit 1000
+
+# Cap the memory used by the dedup set (stops generation when reached)
+python PassGenerator.py -w a b c d e f --max-memory 512
 
 # Compressed output (.gz)
 python PassGenerator.py -w test -AB -z -o wordlist.txt
@@ -256,10 +260,8 @@ python PassGenerator.py -w "@" "#" "$" "%" -o special_chars.txt
 * 💾 File handling:
   * PassGenerator resume capability
 * 📊 Enhanced progress tracking:
-  * Memory usage indicator
+  * Live memory usage indicator
   * Wordlist statistics
-* 🛡️ Error handling:
-  * Memory overflow protection
 
 ## ⚠️ Disclaimer
 
