@@ -1,6 +1,7 @@
 import sys
 import time
 import gzip
+import json
 from tqdm import tqdm
 from itertools import product
 import argparse
@@ -18,6 +19,13 @@ def open_output(filename, use_gzip):
     if use_gzip or filename.endswith('.gz'):
         return gzip.open(filename, 'wt', encoding='utf-8')
     return open(filename, 'w', encoding='utf-8')
+
+def load_config(path):
+    """Load a JSON config file whose keys mirror the command-line options
+    (words, output, min_length, max_length, AB, Ab, ba, Ba, BA, L337,
+    word_start, word_end, gzip). Command-line arguments override it."""
+    with open(path, 'r', encoding='utf-8') as f:
+        return json.load(f)
 
 def leet_convert(word):
     leet_dict = {
@@ -230,12 +238,26 @@ def print_usage_examples():
     print('     python PassGenerator.py -w "123" "abc" "@#$"')
 
 def main():
+    # Pre-parse --config so it can supply defaults for the real parser
+    pre_parser = argparse.ArgumentParser(add_help=False)
+    pre_parser.add_argument('-c', '--config')
+    pre_args, _ = pre_parser.parse_known_args()
+    config = {}
+    if pre_args.config:
+        try:
+            config = load_config(pre_args.config)
+        except Exception as e:
+            print(f"{Fore.RED}Error loading config: {e}{Style.RESET_ALL}")
+            return
+
     parser = argparse.ArgumentParser(
         description=f'{Fore.GREEN}Password Combination Generator{Style.RESET_ALL}',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='Run without parameters for detailed information.')
-    
-    parser.add_argument('-w', '--words', nargs='+', required=True,
+
+    parser.add_argument('-c', '--config',
+                      help='Load options from a JSON config file (CLI args override it)')
+    parser.add_argument('-w', '--words', nargs='+', required='words' not in config,
                       help='Characters to generate combinations from')
     parser.add_argument('-o', '--output', default='combinations.txt',
                       help='Output file name (default: combinations.txt)')
@@ -267,6 +289,9 @@ def main():
     # Output arguments
     parser.add_argument('-z', '--gzip', action='store_true',
                       help='Write gzip-compressed output (.gz)')
+
+    # Config values become defaults; explicit CLI arguments still override them
+    parser.set_defaults(**config)
 
     # If no parameters are provided
     if len(sys.argv) == 1:

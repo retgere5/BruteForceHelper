@@ -1,5 +1,7 @@
 """Tests for the standalone PassGenerator tool."""
 import gzip
+import json
+import sys
 
 import PassGenerator as pg
 
@@ -130,3 +132,24 @@ def test_large_combination_warning(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(pg, "LARGE_COMBINATION_WARNING", 5)
     pg.generate_and_save_combinations(["a", "b", "c"], str(tmp_path / "o.txt"), min_length=1, max_length=None)
     assert "Warning" in capsys.readouterr().out
+
+
+def test_config_file_supplies_options(tmp_path, monkeypatch):
+    out = tmp_path / "out.txt"
+    cfg = tmp_path / "cfg.json"
+    cfg.write_text(json.dumps({"words": ["a", "b"], "min_length": 1, "output": str(out)}), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["PassGenerator.py", "-c", str(cfg)])
+    pg.main()
+    lines = [ln for ln in out.read_text(encoding="utf-8").splitlines() if ln]
+    assert set(lines) == {"a", "b", "aa", "ab", "ba", "bb"}
+
+
+def test_cli_overrides_config(tmp_path, monkeypatch):
+    out = tmp_path / "out.txt"
+    unused = tmp_path / "unused.txt"
+    cfg = tmp_path / "cfg.json"
+    cfg.write_text(json.dumps({"words": ["a"], "output": str(unused)}), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["PassGenerator.py", "-c", str(cfg), "-o", str(out)])
+    pg.main()
+    assert out.exists()
+    assert not unused.exists()
