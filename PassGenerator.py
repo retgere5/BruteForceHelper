@@ -149,7 +149,8 @@ def write_unique(file, word, seen):
 
 def generate_and_save_combinations(lst, filename, min_length=1, max_length=None, uppercase=False, capitalize=False,
                                  reverse=False, reverse_capitalize=False, reverse_upper=False, leet=False,
-                                 word_start=None, word_end=None, use_gzip=False, limit=None, max_memory_mb=None):
+                                 word_start=None, word_end=None, use_gzip=False, limit=None, max_memory_mb=None,
+                                 dedup=True):
     try:
         # Create modifiers dictionary
         modifiers = {
@@ -193,6 +194,7 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
             start_time = time.time()
             seen = set()
             seen_bytes = 0
+            written = 0
             memory_warned = False
             stop = False
             max_memory_bytes = max_memory_mb * 1024 * 1024 if max_memory_mb else None
@@ -201,14 +203,24 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
             for base_word in generate_base_combinations(lst, min_length, max_length, word_start, word_end):
                 # apply_modifications() yields the original word first, then its variants
                 for word in apply_modifications(base_word, modifiers):
-                    if write_unique(file, word, seen):
-                        progress_bar.update(1)
+                    if dedup:
+                        is_new = write_unique(file, word, seen)
+                    else:
+                        # Constant-memory streaming: write everything, keep no set
+                        file.write(word + '\n')
+                        is_new = True
+                    if not is_new:
+                        continue
+
+                    written += 1
+                    progress_bar.update(1)
+
+                    if limit and written >= limit:
+                        stop = True
+                        break
+
+                    if dedup:
                         seen_bytes += sys.getsizeof(word)
-
-                        if limit and len(seen) >= limit:
-                            stop = True
-                            break
-
                         # Total dedup memory = set container + stored strings. Only
                         # measured while it can still change an outcome, to keep the
                         # per-item cost off large unbounded runs.
@@ -238,7 +250,7 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
 
             # Print statistics
             print(f"\n{Fore.GREEN}Combinations saved successfully.{Style.RESET_ALL}")
-            print(f"{Fore.CYAN}Total combinations generated:{Style.RESET_ALL} {Fore.YELLOW}{len(seen):,}{Style.RESET_ALL}")
+            print(f"{Fore.CYAN}Total combinations generated:{Style.RESET_ALL} {Fore.YELLOW}{written:,}{Style.RESET_ALL}")
             print(f"{Fore.CYAN}Processing time:{Style.RESET_ALL} {Fore.YELLOW}{elapsed_time:.2f}{Style.RESET_ALL} seconds")
             print(f"{Fore.CYAN}Memory usage:{Style.RESET_ALL} {Fore.YELLOW}{(sys.getsizeof(seen) + seen_bytes) / (1024*1024):.2f}{Style.RESET_ALL} MB")
             print(f"{Fore.CYAN}File location:{Style.RESET_ALL} {Fore.YELLOW}{os.path.abspath(filename)}{Style.RESET_ALL}")
@@ -340,6 +352,8 @@ def main():
                       help='Stop after generating this many unique combinations')
     parser.add_argument('--max-memory', type=int, dest='max_memory',
                       help='Stop when the in-memory dedup set exceeds this many MB')
+    parser.add_argument('--no-dedup', action='store_true', dest='no_dedup',
+                      help='Do not remove duplicates (constant memory, may repeat lines)')
 
     # Config values become defaults; explicit CLI arguments still override them
     parser.set_defaults(**config)
@@ -399,7 +413,8 @@ def main():
             word_end=args.word_end,
             use_gzip=use_gzip,
             limit=args.limit,
-            max_memory_mb=args.max_memory
+            max_memory_mb=args.max_memory,
+            dedup=not args.no_dedup
         )
         
     except Exception as e:

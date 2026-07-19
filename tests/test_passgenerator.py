@@ -188,3 +188,26 @@ def test_max_memory_stops_early(tmp_path):
     pg.generate_and_save_combinations(words, str(out), min_length=1, max_length=None, max_memory_mb=1)
     lines = [ln for ln in out.read_text(encoding="utf-8").splitlines() if ln]
     assert 0 < len(lines) < 27930  # a 1 MB cap must stop before exhausting the space
+
+
+def test_dedup_default_removes_duplicates(tmp_path):
+    out = tmp_path / "o.txt"
+    pg.generate_and_save_combinations(["a", "a"], str(out), min_length=1, max_length=None)
+    lines = [ln for ln in out.read_text(encoding="utf-8").splitlines() if ln]
+    assert len(lines) == len(set(lines))
+
+
+def test_no_dedup_keeps_duplicates(tmp_path):
+    out = tmp_path / "o.txt"
+    pg.generate_and_save_combinations(["a", "a"], str(out), min_length=1, max_length=None, dedup=False)
+    lines = [ln for ln in out.read_text(encoding="utf-8").splitlines() if ln]
+    assert lines.count("a") > 1
+    assert len(lines) > len(set(lines))
+
+
+def test_no_dedup_via_cli(tmp_path, monkeypatch):
+    out = tmp_path / "o.txt"
+    monkeypatch.setattr(sys, "argv", ["PassGenerator.py", "-w", "a", "a", "--no-dedup", "-o", str(out)])
+    pg.main()
+    lines = [ln for ln in out.read_text(encoding="utf-8").splitlines() if ln]
+    assert len(lines) > len(set(lines))
