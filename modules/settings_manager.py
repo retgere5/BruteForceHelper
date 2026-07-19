@@ -7,7 +7,22 @@ class Settings:
     def __init__(self):
         self.settings_file = "wordlist_optimizer_settings.json"
         self.ui = UIManager()
-        
+        self.recommender = FilterRecommender()
+
+    def _show_recommendations(self, input_file, language_manager) -> None:
+        """Wordlist dosya boyutuna göre önerilen filtre setlerini gösterir."""
+        try:
+            if not input_file or not os.path.exists(input_file):
+                return
+            recommendations = self.recommender.get_recommendations(os.path.getsize(input_file))
+            if not recommendations:
+                return
+            self.ui.print_header(language_manager.get_text('recommended_filters'))
+            for key, _description in recommendations:
+                self.ui.print_info(f"  - {language_manager.get_text(key, 'filter_recommendations')}")
+        except Exception:
+            pass  # Öneriler bilgilendirme amaçlıdır; hata ana akışı bozmamalı
+
     def get_filter_options(self, language_manager) -> Dict:
         """Get filter options from user with translations."""
         last_settings = self.load_settings()
@@ -45,7 +60,10 @@ class Settings:
             f"{language_manager.get_text('output_file')} [optimized.txt]",
             default="optimized.txt"
         )
-        
+
+        # Wordlist boyutuna göre filtre önerileri göster
+        self._show_recommendations(options['input'], language_manager)
+
         # Get length filters
         self.ui.print_header(language_manager.get_text('length_filters'))
         min_length = self.ui.get_user_input(language_manager.get_text('min_length'))

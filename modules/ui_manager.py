@@ -1,4 +1,4 @@
-from colorama import init, Fore, Back, Style
+from colorama import init, Fore, Style
 
 class UIManager:
     def __init__(self):
