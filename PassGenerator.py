@@ -2,6 +2,7 @@ import sys
 import time
 import gzip
 import json
+import shutil
 from tqdm import tqdm
 from itertools import product
 import argparse
@@ -13,6 +14,17 @@ init(autoreset=True)
 
 # Combination estimate above which a heads-up is printed before generating
 LARGE_COMBINATION_WARNING = 5_000_000
+
+# Warn when the output location has less free space than this
+MIN_FREE_DISK_BYTES = 100 * 1024 * 1024  # 100 MB
+
+def check_disk_space(path):
+    """Free bytes on the filesystem that holds `path`'s directory, or None if unknown."""
+    try:
+        target = os.path.dirname(os.path.abspath(path)) or '.'
+        return shutil.disk_usage(target).free
+    except Exception:
+        return None
 
 def open_output(filename, use_gzip):
     """Open the output file, gzip-compressed when requested or when it ends in .gz."""
@@ -134,7 +146,7 @@ def write_unique(file, word, seen):
 
 def generate_and_save_combinations(lst, filename, min_length=1, max_length=None, uppercase=False, capitalize=False,
                                  reverse=False, reverse_capitalize=False, reverse_upper=False, leet=False,
-                                 word_start=None, word_end=None, use_gzip=False):
+                                 word_start=None, word_end=None, use_gzip=False, limit=None):
     try:
         # Create modifiers dictionary
         modifiers = {
@@ -148,11 +160,19 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
 
         # Calculate total combinations
         total_combinations = calculate_total_combinations(lst, min_length, max_length, modifiers)
+        if limit:
+            total_combinations = min(total_combinations, limit)
 
         # Warn before a very large run
         if total_combinations > LARGE_COMBINATION_WARNING:
             print(f"{Fore.YELLOW}Warning: about {total_combinations:,} combinations estimated; "
                   f"this may take a while and use significant disk space.{Style.RESET_ALL}")
+
+        # Warn if the output location is low on free disk space
+        free = check_disk_space(filename)
+        if free is not None and free < MIN_FREE_DISK_BYTES:
+            print(f"{Fore.YELLOW}Warning: low free disk space "
+                  f"({free / (1024 * 1024):.0f} MB) on the output location.{Style.RESET_ALL}")
 
         with open_output(filename, use_gzip) as file:
             progress_bar = tqdm(total=total_combinations,
@@ -169,18 +189,20 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
             
             start_time = time.time()
             seen = set()
-            
+            reached_limit = False
+
             # Generate and process combinations
             for base_word in generate_base_combinations(lst, min_length, max_length, word_start, word_end):
-                # Write original word
-                if write_unique(file, base_word, seen):
-                    progress_bar.update(1)
-                
-                # Apply modifications and write
-                for modified_word in apply_modifications(base_word, modifiers):
-                    if write_unique(file, modified_word, seen):
+                # apply_modifications() yields the original word first, then its variants
+                for word in apply_modifications(base_word, modifiers):
+                    if write_unique(file, word, seen):
                         progress_bar.update(1)
-            
+                        if limit and len(seen) >= limit:
+                            reached_limit = True
+                            break
+                if reached_limit:
+                    break
+
             # Update progress bar to 100% if needed
             if progress_bar.n < total_combinations:
                 progress_bar.update(total_combinations - progress_bar.n)
@@ -289,6 +311,8 @@ def main():
     # Output arguments
     parser.add_argument('-z', '--gzip', action='store_true',
                       help='Write gzip-compressed output (.gz)')
+    parser.add_argument('--limit', type=int,
+                      help='Stop after generating this many unique combinations')
 
     # Config values become defaults; explicit CLI arguments still override them
     parser.set_defaults(**config)
@@ -319,6 +343,10 @@ def main():
             print(f"{Fore.RED}Error: Minimum length cannot be greater than maximum length.{Style.RESET_ALL}")
             return
 
+        if args.limit is not None and args.limit < 1:
+            print(f"{Fore.RED}Error: Limit cannot be less than 1.{Style.RESET_ALL}")
+            return
+
         # Resolve the output name: append .gz when compressing without the suffix
         use_gzip = args.gzip or args.output.endswith('.gz')
         output = args.output
@@ -338,7 +366,8 @@ def main():
             leet=args.L337,
             word_start=args.word_start,
             word_end=args.word_end,
-            use_gzip=use_gzip
+            use_gzip=use_gzip,
+            limit=args.limit
         )
         
     except Exception as e:

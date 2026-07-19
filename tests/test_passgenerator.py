@@ -153,3 +153,24 @@ def test_cli_overrides_config(tmp_path, monkeypatch):
     pg.main()
     assert out.exists()
     assert not unused.exists()
+
+
+def test_limit_caps_unique_output(tmp_path):
+    out = tmp_path / "o.txt"
+    pg.generate_and_save_combinations(["a", "b", "c"], str(out), min_length=1, max_length=None, limit=4)
+    lines = [ln for ln in out.read_text(encoding="utf-8").splitlines() if ln]
+    assert len(lines) == 4
+
+
+def test_limit_via_cli(tmp_path, monkeypatch):
+    out = tmp_path / "o.txt"
+    monkeypatch.setattr(sys, "argv", ["PassGenerator.py", "-w", "a", "b", "c", "--limit", "3", "-o", str(out)])
+    pg.main()
+    lines = [ln for ln in out.read_text(encoding="utf-8").splitlines() if ln]
+    assert len(lines) == 3
+
+
+def test_low_disk_space_warning(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(pg, "check_disk_space", lambda path: 1024)  # pretend 1 KB free
+    pg.generate_and_save_combinations(["a"], str(tmp_path / "o.txt"), min_length=1, max_length=None)
+    assert "low free disk space" in capsys.readouterr().out.lower()
