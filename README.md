@@ -107,6 +107,7 @@ python PassGenerator.py -w [words/chars] [options]
 * `-we, --word-end`: Add suffix to words
 * `-z, --gzip`: Write gzip-compressed output (`.gz`)
 * `-c, --config`: Load options from a JSON config file (CLI arguments override it)
+* `--limit`: Stop after generating this many unique combinations
 
 #### Examples:
 
@@ -130,6 +131,9 @@ python PassGenerator.py -w test user -m 4 -M 8 -AB -L337
 # Multiple features
 python PassGenerator.py -w retgere 5 Prophet -m 6 -M 12 -AB -ba -Ab -Ba
 # Output: retgere, RETGERE, eregter, Retgere, retgere5, Prophet, ...
+
+# Cap the number of unique combinations
+python PassGenerator.py -w a b c --limit 1000
 
 # Compressed output (.gz)
 python PassGenerator.py -w test -AB -z -o wordlist.txt
@@ -251,14 +255,11 @@ python PassGenerator.py -w "@" "#" "$" "%" -o special_chars.txt
   * Streaming / disk-based deduplication for very large runs
 * 💾 File handling:
   * PassGenerator resume capability
-  * Disk space checks
 * 📊 Enhanced progress tracking:
   * Memory usage indicator
   * Wordlist statistics
 * 🛡️ Error handling:
   * Memory overflow protection
-* ⚙️ Configuration:
-  * Combination limit settings
 
 ## ⚠️ Disclaimer
 
