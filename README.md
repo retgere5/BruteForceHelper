@@ -175,6 +175,9 @@ python WordlistFixer.py
 
 # Non-interactive, from a JSON config
 python WordlistFixer.py --config config.json --lang en
+
+# Analyze a wordlist (length distribution, character composition)
+python WordlistFixer.py --analyze rockyou.txt --lang en
 ```
 
 Example `config.json` for WordlistOptimizer (missing filter keys default to off; `input` is required):
@@ -264,7 +267,6 @@ python PassGenerator.py -w "@" "#" "$" "%" -o special_chars.txt
   * PassGenerator resume capability
 * 📊 Enhanced progress tracking:
   * Live memory usage indicator
-  * Wordlist statistics
 
 ## ⚠️ Disclaimer
 
