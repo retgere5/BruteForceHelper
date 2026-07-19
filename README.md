@@ -110,6 +110,7 @@ python PassGenerator.py -w [words/chars] [options]
 * `--limit`: Stop after generating this many unique combinations
 * `--max-memory`: Stop when the in-memory dedup set exceeds this many MB
 * `--no-dedup`: Skip deduplication (constant memory; output may contain repeats)
+* `--resume`: Checkpoint the run so it can be resumed if interrupted
 
 #### Examples:
 
@@ -143,6 +144,9 @@ python PassGenerator.py -w a b c d e f --max-memory 512
 # Stream without deduplication (constant memory, may repeat lines)
 python PassGenerator.py -w a b c --no-dedup
 
+# Resumable run: if interrupted (Ctrl+C), re-run the same command to continue
+python PassGenerator.py -w a b c d --resume -o big.txt
+
 # Compressed output (.gz)
 python PassGenerator.py -w test -AB -z -o wordlist.txt
 # Writes wordlist.txt.gz
@@ -164,6 +168,8 @@ Example `config.json` for PassGenerator:
   "gzip": true
 }
 ```
+
+> `--resume` writes a small `<output>.pgckpt` checkpoint. On resume it validates that the parameters match and rebuilds the dedup set from the existing output, so deduped runs resume exactly; with `--no-dedup` a few lines may repeat around the interruption point.
 
 ### 🔍 WordlistOptimizer
 
@@ -263,8 +269,6 @@ python PassGenerator.py -w "@" "#" "$" "%" -o special_chars.txt
 
 * 🚀 Performance optimizations:
   * Disk-based deduplication for very large runs
-* 💾 File handling:
-  * PassGenerator resume capability
 
 ## ⚠️ Disclaimer
 
