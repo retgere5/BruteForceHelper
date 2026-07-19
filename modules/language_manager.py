@@ -25,6 +25,7 @@ class LanguageManager:
                 "processors_used": "işlemci kullanılıyor",
                 "chunk_size": "Chunk boyutu:",
                 "passwords": "şifre",
+                "password": "şifre",
                 "press_q_to_stop": "İşlemi durdurmak için 'q',",
                 "press_c_to_checkpoint": "checkpoint alıp durdurmak için 'c' tuşuna basın",
                 "total": "Toplam",
@@ -37,6 +38,14 @@ class LanguageManager:
                 "file_not_found": "dosyası bulunamadı.",
                 "unexpected_error": "Beklenmeyen bir hata oluştu:",
                 "stats_saved": "İstatistikler kaydedildi:",
+                "stopping": "Program durduruluyor...",
+                "taking_checkpoint": "Checkpoint alınıyor...",
+                "paused_last_stats": "İşlem duraklatıldı. Son istatistikler:",
+                "saving_checkpoint": "Checkpoint kaydediliyor...",
+                "final_filter_stats": "Final Filtreleme İstatistikleri",
+                "optimization_complete": "Optimizasyon tamamlandı!",
+                "most_effective_filters": "En etkili filtreler",
+                "recommended_filters": "Önerilen filtreler (wordlist boyutuna göre)",
                 "filter_groups": {
                     "basic_security": "Temel Güvenlik",
                     "character_based": "Karakter Bazlı",
@@ -45,7 +54,7 @@ class LanguageManager:
                     "word_based": "Kelime Bazlı"
                 },
                 "filter_descriptions": {
-                    "min_length": "Çok kısa şifreleri sil",
+                    "min_length_filter": "Çok kısa şifreleri sil",
                     "repetitive_chars": "Tekrar eden karakterli şifreleri sil",
                     "pattern_repetition": "Basit kalıplı şifreleri sil",
                     "number_only": "Sadece sayılardan oluşan şifreleri sil",
@@ -54,7 +63,17 @@ class LanguageManager:
                     "keyboard_patterns": "Klavye düzenine göre oluşturulmuş şifreleri sil",
                     "special_patterns": "Özel karakter kalıplı şifreleri sil",
                     "year_patterns": "Yıl formatındaki şifreleri sil",
-                    "single_char_type": "Tek tip karakterli şifreleri sil"
+                    "single_char_type": "Tek tip karakterli şifreleri sil",
+                    "date_patterns": "Tarih formatındaki şifreleri sil",
+                    "phone_patterns": "Telefon numarası formatındaki şifreleri sil",
+                    "common_words": "Yaygın kelime içeren şifreleri sil",
+                    "leet_speak": "Leet speak (1337) şifreleri sil"
+                },
+                "filter_recommendations": {
+                    "fast_filtering": "Hızlı filtreleme (küçük wordlist'ler)",
+                    "smart_filtering": "Akıllı filtreleme (orta boy)",
+                    "format_control": "Format kontrolü (yaygın kalıplar)",
+                    "maximum_security": "Maksimum güvenlik (büyük wordlist'ler)"
                 }
             },
             "en": {
@@ -78,6 +97,7 @@ class LanguageManager:
                 "processors_used": "processors being used",
                 "chunk_size": "Chunk size:",
                 "passwords": "passwords",
+                "password": "password",
                 "press_q_to_stop": "Press 'q' to stop,",
                 "press_c_to_checkpoint": "press 'c' to save checkpoint and stop",
                 "total": "Total",
@@ -90,6 +110,14 @@ class LanguageManager:
                 "file_not_found": "file not found.",
                 "unexpected_error": "An unexpected error occurred:",
                 "stats_saved": "Statistics saved:",
+                "stopping": "Stopping...",
+                "taking_checkpoint": "Saving checkpoint...",
+                "paused_last_stats": "Paused. Last statistics:",
+                "saving_checkpoint": "Saving checkpoint...",
+                "final_filter_stats": "Final Filtering Statistics",
+                "optimization_complete": "Optimization complete!",
+                "most_effective_filters": "Most effective filters",
+                "recommended_filters": "Recommended filters (by wordlist size)",
                 "filter_groups": {
                     "basic_security": "Basic Security",
                     "character_based": "Character Based",
@@ -98,7 +126,7 @@ class LanguageManager:
                     "word_based": "Word Based"
                 },
                 "filter_descriptions": {
-                    "min_length": "Remove very short passwords",
+                    "min_length_filter": "Remove very short passwords",
                     "repetitive_chars": "Remove passwords with repetitive characters",
                     "pattern_repetition": "Remove passwords with simple patterns",
                     "number_only": "Remove passwords containing only numbers",
@@ -107,7 +135,17 @@ class LanguageManager:
                     "keyboard_patterns": "Remove passwords based on keyboard layout",
                     "special_patterns": "Remove passwords with special character patterns",
                     "year_patterns": "Remove passwords in year format",
-                    "single_char_type": "Remove passwords with single character type"
+                    "single_char_type": "Remove passwords with single character type",
+                    "date_patterns": "Remove passwords in date format",
+                    "phone_patterns": "Remove passwords in phone-number format",
+                    "common_words": "Remove passwords containing common words",
+                    "leet_speak": "Remove leet-speak (1337) passwords"
+                },
+                "filter_recommendations": {
+                    "fast_filtering": "Fast filtering (small wordlists)",
+                    "smart_filtering": "Smart filtering (medium)",
+                    "format_control": "Format control (common patterns)",
+                    "maximum_security": "Maximum security (large wordlists)"
                 }
             }
         }

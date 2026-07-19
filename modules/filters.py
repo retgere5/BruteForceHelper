@@ -2,7 +2,8 @@ import re
 import time
 
 class FilterStats:
-    def __init__(self):
+    def __init__(self, language_manager=None):
+        self.language_manager = language_manager
         self.stats = {
             'min_length': 0,
             'max_length': 0,
@@ -23,6 +24,15 @@ class FilterStats:
         self.last_update = time.time()
         self.update_interval = 1.0  # 1 saniye
     
+    def _text(self, key, fallback):
+        """Çeviri varsa onu, yoksa yedek metni döndürür."""
+        if self.language_manager is not None:
+            try:
+                return self.language_manager.get_text(key)
+            except Exception:
+                return fallback
+        return fallback
+
     def update(self, filter_name):
         """Filtre istatistiğini günceller."""
         self.stats[filter_name] += 1
@@ -42,12 +52,12 @@ class FilterStats:
         sorted_filters = sorted(active_filters, key=lambda x: x[1], reverse=True)[:3]
         
         # İstatistik metnini hazırla
-        stats_text = f"Toplam: {total_passwords:,}"
+        stats_text = f"{self._text('total', 'Toplam')}: {total_passwords:,}"
         if sorted_filters:
-            stats_text += " | En etkili filtreler: "
+            stats_text += f" | {self._text('most_effective_filters', 'En etkili filtreler')}: "
             filter_texts = []
             for filter_name, count in sorted_filters:
-                percentage = (count / total_passwords) * 100
+                percentage = (count / total_passwords) * 100 if total_passwords else 0
                 filter_texts.append(f"{filter_name}(%{percentage:.1f})")
             stats_text += ", ".join(filter_texts)
         
@@ -197,11 +207,19 @@ class PasswordFilter:
         return bool(re.search(r'19\d{2}|20\d{2}', password))
     
     def _is_single_char_type(self, password):
-        """Tek tip karakterleri kontrol eder."""
-        return (password.isdigit() or 
-                password.isalpha() or 
-                password.isupper() or 
-                password.islower())
+        """Şifre tek bir karakter kategorisinden mi oluşuyor (hepsi rakam / hepsi
+        harf / hepsi diğer)?
+
+        Eski sürüm isupper()/islower() kullanıyordu; bunlar 'PASS123' gibi karma
+        harf+rakam şifreler için de True döndürdüğünden karma şifreler yanlışlıkla
+        eleniyordu. Artık yalnızca gerçekten tek kategoriden oluşanlar elenir.
+        """
+        if not password:
+            return False
+        has_digit = any(c.isdigit() for c in password)
+        has_alpha = any(c.isalpha() for c in password)
+        has_other = any(not c.isalnum() for c in password)
+        return (has_digit + has_alpha + has_other) == 1
     
     def _is_common_word(self, password):
         """Yaygın kelimeleri kontrol eder."""
