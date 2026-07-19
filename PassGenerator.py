@@ -3,6 +3,7 @@ import time
 import gzip
 import json
 import shutil
+import hashlib
 from tqdm import tqdm
 from itertools import product
 import argparse
@@ -24,6 +25,9 @@ MEMORY_WARNING_BYTES = 512 * 1024 * 1024  # 512 MB
 # How often (in written combinations) to refresh the live memory indicator
 MEMORY_INDICATOR_INTERVAL = 100_000
 
+# How often (in base words) to persist a resume checkpoint
+CHECKPOINT_INTERVAL = 10_000
+
 def check_disk_space(path):
     """Free bytes on the filesystem that holds `path`'s directory, or None if unknown."""
     try:
@@ -32,11 +36,18 @@ def check_disk_space(path):
     except Exception:
         return None
 
-def open_output(filename, use_gzip):
-    """Open the output file, gzip-compressed when requested or when it ends in .gz."""
+def open_output(filename, use_gzip, append=False):
+    """Open the output file for writing (append optional), gzip-compressed when
+    requested or when it ends in .gz."""
     if use_gzip or filename.endswith('.gz'):
-        return gzip.open(filename, 'wt', encoding='utf-8')
-    return open(filename, 'w', encoding='utf-8')
+        return gzip.open(filename, 'at' if append else 'wt', encoding='utf-8')
+    return open(filename, 'a' if append else 'w', encoding='utf-8')
+
+def open_input(filename):
+    """Open a text file for reading, gzip-decompressed when it ends in .gz."""
+    if filename.endswith('.gz'):
+        return gzip.open(filename, 'rt', encoding='utf-8')
+    return open(filename, 'r', encoding='utf-8')
 
 def load_config(path):
     """Load a JSON config file whose keys mirror the command-line options
@@ -44,6 +55,32 @@ def load_config(path):
     word_start, word_end, gzip). Command-line arguments override it."""
     with open(path, 'r', encoding='utf-8') as f:
         return json.load(f)
+
+def generation_signature(words, min_length, max_length, modifiers, word_start, word_end, use_gzip):
+    """Stable fingerprint of the generation parameters, used to validate a resume."""
+    payload = json.dumps({
+        'words': list(words), 'min': min_length, 'max': max_length,
+        'modifiers': modifiers, 'ws': word_start, 'we': word_end, 'gzip': bool(use_gzip),
+    }, sort_keys=True)
+    return hashlib.sha1(payload.encode('utf-8')).hexdigest()
+
+def save_checkpoint(path, signature, position, written):
+    """Atomically persist resume state (position = base words fully processed)."""
+    tmp = path + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump({'signature': signature, 'position': position, 'written': written}, f)
+    os.replace(tmp, path)
+
+def load_checkpoint(path, signature):
+    """Return the checkpoint dict if it exists and matches the signature, else None."""
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+    if data.get('signature') == signature:
+        return data
+    return None
 
 def leet_convert(word):
     leet_dict = {
@@ -153,7 +190,7 @@ def write_unique(file, word, seen):
 def generate_and_save_combinations(lst, filename, min_length=1, max_length=None, uppercase=False, capitalize=False,
                                  reverse=False, reverse_capitalize=False, reverse_upper=False, leet=False,
                                  word_start=None, word_end=None, use_gzip=False, limit=None, max_memory_mb=None,
-                                 dedup=True):
+                                 dedup=True, resume=False):
     try:
         # Create modifiers dictionary
         modifiers = {
@@ -181,8 +218,35 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
             print(f"{Fore.YELLOW}Warning: low free disk space "
                   f"({free / (1024 * 1024):.0f} MB) on the output location.{Style.RESET_ALL}")
 
-        with open_output(filename, use_gzip) as file:
+        # Resume support: restore state from a matching checkpoint
+        checkpoint_file = filename + '.pgckpt'
+        signature = generation_signature(lst, min_length, max_length, modifiers, word_start, word_end, use_gzip)
+        seen = set()
+        seen_bytes = 0
+        written = 0
+        skip_count = 0
+        resuming = False
+        if resume:
+            checkpoint = load_checkpoint(checkpoint_file, signature)
+            if checkpoint:
+                skip_count = checkpoint['position']
+                resuming = True
+                if dedup:
+                    # Rebuild the dedup set from what was already written
+                    with open_input(filename) as existing:
+                        for line in existing:
+                            existing_word = line.rstrip('\n')
+                            if existing_word and existing_word not in seen:
+                                seen.add(existing_word)
+                                seen_bytes += sys.getsizeof(existing_word)
+                    written = len(seen)
+                else:
+                    written = checkpoint['written']
+                print(f"{Fore.CYAN}Resuming from {written:,} combinations.{Style.RESET_ALL}")
+
+        with open_output(filename, use_gzip, append=resuming) as file:
             progress_bar = tqdm(total=total_combinations,
+                              initial=written,
                               desc=f'{Fore.CYAN}Processing{Style.RESET_ALL}',
                               unit=f' {Fore.GREEN}combinations{Style.RESET_ALL}',
                               dynamic_ncols=True,
@@ -193,69 +257,93 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
                               miniters=1,
                               mininterval=0.1,
                               smoothing=0.3)
-            
+
             start_time = time.time()
-            seen = set()
-            seen_bytes = 0
-            written = 0
             memory_warned = False
             stop = False
+            base_index = 0
             max_memory_bytes = max_memory_mb * 1024 * 1024 if max_memory_mb else None
 
-            # Generate and process combinations
-            for base_word in generate_base_combinations(lst, min_length, max_length, word_start, word_end):
-                # apply_modifications() yields the original word first, then its variants
-                for word in apply_modifications(base_word, modifiers):
-                    if dedup:
-                        is_new = write_unique(file, word, seen)
-                    else:
-                        # Constant-memory streaming: write everything, keep no set
-                        file.write(word + '\n')
-                        is_new = True
-                    if not is_new:
+            try:
+                # Generate and process combinations
+                for base_word in generate_base_combinations(lst, min_length, max_length, word_start, word_end):
+                    if base_index < skip_count:
+                        base_index += 1
                         continue
 
-                    written += 1
-                    progress_bar.update(1)
+                    # apply_modifications() yields the original word first, then its variants
+                    for word in apply_modifications(base_word, modifiers):
+                        if dedup:
+                            is_new = write_unique(file, word, seen)
+                        else:
+                            # Constant-memory streaming: write everything, keep no set
+                            file.write(word + '\n')
+                            is_new = True
+                        if not is_new:
+                            continue
 
-                    if limit and written >= limit:
-                        stop = True
+                        written += 1
+                        progress_bar.update(1)
+
+                        if limit and written >= limit:
+                            stop = True
+                            break
+
+                        if dedup:
+                            seen_bytes += sys.getsizeof(word)
+
+                            # Live memory indicator in the progress bar (cheap: periodic)
+                            if written % MEMORY_INDICATOR_INTERVAL == 0:
+                                progress_bar.set_postfix_str(
+                                    f"mem ~{(sys.getsizeof(seen) + seen_bytes) / (1024*1024):.0f}MB")
+
+                            # Total dedup memory = set container + stored strings. Only
+                            # measured while it can still change an outcome, to keep the
+                            # per-item cost off large unbounded runs.
+                            if max_memory_bytes or not memory_warned:
+                                used_bytes = sys.getsizeof(seen) + seen_bytes
+                                if not memory_warned and used_bytes >= MEMORY_WARNING_BYTES:
+                                    memory_warned = True
+                                    progress_bar.clear()
+                                    print(f"{Fore.YELLOW}Warning: the dedup set is holding ~"
+                                          f"{used_bytes / (1024*1024):.0f} MB in memory.{Style.RESET_ALL}")
+                                if max_memory_bytes and used_bytes >= max_memory_bytes:
+                                    stop = True
+                                    progress_bar.clear()
+                                    print(f"{Fore.YELLOW}Memory limit reached (~"
+                                          f"{used_bytes / (1024*1024):.0f} MB); stopping generation.{Style.RESET_ALL}")
+                                    break
+
+                    base_index += 1
+                    if stop:
                         break
 
-                    if dedup:
-                        seen_bytes += sys.getsizeof(word)
+                    # Persist a resume checkpoint periodically
+                    if resume and base_index % CHECKPOINT_INTERVAL == 0:
+                        file.flush()
+                        save_checkpoint(checkpoint_file, signature, base_index, written)
 
-                        # Live memory indicator in the progress bar (cheap: periodic)
-                        if written % MEMORY_INDICATOR_INTERVAL == 0:
-                            progress_bar.set_postfix_str(
-                                f"mem ~{(sys.getsizeof(seen) + seen_bytes) / (1024*1024):.0f}MB")
-
-                        # Total dedup memory = set container + stored strings. Only
-                        # measured while it can still change an outcome, to keep the
-                        # per-item cost off large unbounded runs.
-                        if max_memory_bytes or not memory_warned:
-                            used_bytes = sys.getsizeof(seen) + seen_bytes
-                            if not memory_warned and used_bytes >= MEMORY_WARNING_BYTES:
-                                memory_warned = True
-                                progress_bar.clear()
-                                print(f"{Fore.YELLOW}Warning: the dedup set is holding ~"
-                                      f"{used_bytes / (1024*1024):.0f} MB in memory.{Style.RESET_ALL}")
-                            if max_memory_bytes and used_bytes >= max_memory_bytes:
-                                stop = True
-                                progress_bar.clear()
-                                print(f"{Fore.YELLOW}Memory limit reached (~"
-                                      f"{used_bytes / (1024*1024):.0f} MB); stopping generation.{Style.RESET_ALL}")
-                                break
-                if stop:
-                    break
+            except KeyboardInterrupt:
+                if resume:
+                    file.flush()
+                    save_checkpoint(checkpoint_file, signature, base_index, written)
+                    progress_bar.close()
+                    print(f"\n{Fore.YELLOW}Interrupted; checkpoint saved. "
+                          f"Re-run with --resume to continue.{Style.RESET_ALL}")
+                    return
+                raise
 
             # Update progress bar to 100% if needed
             if progress_bar.n < total_combinations:
                 progress_bar.update(total_combinations - progress_bar.n)
-            
+
             progress_bar.close()
             end_time = time.time()
             elapsed_time = end_time - start_time
+
+            # A completed run has no checkpoint to keep
+            if resume and os.path.exists(checkpoint_file):
+                os.remove(checkpoint_file)
 
             # Print statistics
             print(f"\n{Fore.GREEN}Combinations saved successfully.{Style.RESET_ALL}")
@@ -363,6 +451,8 @@ def main():
                       help='Stop when the in-memory dedup set exceeds this many MB')
     parser.add_argument('--no-dedup', action='store_true', dest='no_dedup',
                       help='Do not remove duplicates (constant memory, may repeat lines)')
+    parser.add_argument('--resume', action='store_true',
+                      help='Checkpoint the run and resume it if interrupted')
 
     # Config values become defaults; explicit CLI arguments still override them
     parser.set_defaults(**config)
@@ -423,7 +513,8 @@ def main():
             use_gzip=use_gzip,
             limit=args.limit,
             max_memory_mb=args.max_memory,
-            dedup=not args.no_dedup
+            dedup=not args.no_dedup,
+            resume=args.resume
         )
         
     except Exception as e:

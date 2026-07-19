@@ -37,6 +37,7 @@ ENV/
 !requirements-dev.txt
 checkpoint/
 *.checkpoint
+*.pgckpt
 output/
 wordlists/
 

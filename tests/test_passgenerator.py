@@ -1,9 +1,24 @@
 """Tests for the standalone PassGenerator tool."""
 import gzip
 import json
+import os
 import sys
 
 import PassGenerator as pg
+
+
+def _interrupt_after(monkeypatch, n):
+    """Patch apply_modifications to raise KeyboardInterrupt after n calls."""
+    real = pg.apply_modifications
+    calls = {"n": 0}
+
+    def fake(word, mods):
+        calls["n"] += 1
+        if calls["n"] > n:
+            raise KeyboardInterrupt
+        return real(word, mods)
+
+    monkeypatch.setattr(pg, "apply_modifications", fake)
 
 
 def _mods(**over):
@@ -220,3 +235,36 @@ def test_live_memory_indicator_runs(tmp_path, monkeypatch):
     pg.generate_and_save_combinations(["a", "b", "c"], str(out), min_length=1, max_length=None)
     lines = [ln for ln in out.read_text(encoding="utf-8").splitlines() if ln]
     assert len(lines) > 0 and len(lines) == len(set(lines))
+
+
+def test_resume_no_checkpoint_runs_normally(tmp_path):
+    out = tmp_path / "o.txt"
+    pg.generate_and_save_combinations(["a", "b"], str(out), min_length=1, max_length=None, resume=True)
+    lines = sorted(ln for ln in out.read_text(encoding="utf-8").splitlines() if ln)
+    assert lines == sorted({"a", "b", "aa", "ab", "ba", "bb"})
+    assert not os.path.exists(str(out) + ".pgckpt")  # removed on completion
+
+
+def test_resume_saves_checkpoint_on_interrupt(tmp_path, monkeypatch):
+    out = tmp_path / "o.txt"
+    _interrupt_after(monkeypatch, 2)
+    pg.generate_and_save_combinations(["a", "b", "c", "d"], str(out), min_length=1, max_length=None, resume=True)
+    assert os.path.exists(str(out) + ".pgckpt")
+
+
+def test_resume_completes_after_interrupt(tmp_path, monkeypatch):
+    words = ["a", "b", "c", "d"]
+    full = tmp_path / "full.txt"
+    pg.generate_and_save_combinations(words, str(full), min_length=1, max_length=None)
+    expected = sorted(ln for ln in full.read_text(encoding="utf-8").splitlines() if ln)
+
+    out = tmp_path / "o.txt"
+    _interrupt_after(monkeypatch, 2)
+    pg.generate_and_save_combinations(words, str(out), min_length=1, max_length=None, resume=True)
+    assert os.path.exists(str(out) + ".pgckpt")
+
+    monkeypatch.undo()  # restore apply_modifications, then resume to completion
+    pg.generate_and_save_combinations(words, str(out), min_length=1, max_length=None, resume=True)
+    resumed = sorted(ln for ln in out.read_text(encoding="utf-8").splitlines() if ln)
+    assert resumed == expected
+    assert not os.path.exists(str(out) + ".pgckpt")
