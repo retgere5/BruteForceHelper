@@ -4,6 +4,7 @@ These guard the previously fatal bugs: WordlistOptimizer never stored
 self.options, and it consumed a dict via attribute access -> AttributeError
 before any filtering happened.
 """
+import gzip
 import pickle
 from types import SimpleNamespace
 
@@ -105,6 +106,20 @@ def test_optimize_under_real_multiprocessing(tmp_path, monkeypatch):
 
     survivors = [ln for ln in outp.read_text(encoding="utf-8").splitlines() if ln]
     assert survivors == ["KEEPTHIS!"]
+
+
+def test_optimizer_gzip_input_and_output(tmp_path):
+    inp = tmp_path / "in.txt.gz"
+    with gzip.open(inp, "wt", encoding="utf-8") as fh:
+        fh.write("123456\nGoodPass9!\n")
+    outp = tmp_path / "out.txt.gz"
+
+    opt = wf.WordlistOptimizer(_options(inp, outp, number_only=True), LanguageManager())
+    opt.optimize()
+
+    with gzip.open(outp, "rt", encoding="utf-8") as fh:
+        survivors = [ln for ln in fh.read().splitlines() if ln]
+    assert survivors == ["GoodPass9!"]
 
 
 def test_checkpoint_manager_roundtrip(tmp_path):

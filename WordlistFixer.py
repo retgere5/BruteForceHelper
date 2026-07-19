@@ -3,6 +3,7 @@ from itertools import islice
 import os
 import math
 import time
+import gzip
 import traceback
 from tqdm import tqdm
 import json
@@ -36,6 +37,16 @@ def check_keyboard_input():
     except Exception:
         return None
     return None
+
+def open_text(path, mode):
+    """Metin dosyasını açar; uzantı .gz ise şeffaf biçimde gzip kullanır.
+
+    mode: 'r' / 'w' / 'a' (metin kipi). gzip için otomatik olarak 't' eklenir.
+    """
+    path = str(path)
+    if path.endswith('.gz'):
+        return gzip.open(path, mode + 't', encoding='utf-8')
+    return open(path, mode, encoding='utf-8')
 
 def _filter_chunk_worker(args):
     """Tek bir parçayı (chunk) filtreler. Çoklu-işlem havuzunda çalışacak şekilde
@@ -75,7 +86,7 @@ class WordlistOptimizer:
             checkpoint = CheckpointManager(checkpoint_file)
             
             # Toplam satır sayısı
-            with open(self.options.input, 'r', encoding='utf-8') as _f:
+            with open_text(self.options.input, 'r') as _f:
                 total_lines = sum(1 for _ in _f)
 
             # Chunk boyutu (bellek dostu parça okuma) ve işçi sayısı
@@ -102,8 +113,8 @@ class WordlistOptimizer:
             # girdi sırasıyla aynı kalır); aksi halde ana süreçte (map) çalış.
             pool = mp.Pool(processes=worker_count) if worker_count > 1 else None
             try:
-                with open(self.options.input, 'r', encoding='utf-8') as infile, \
-                     open(self.options.output, 'a' if checkpoint.last_position > 0 else 'w', encoding='utf-8') as outfile:
+                with open_text(self.options.input, 'r') as infile, \
+                     open_text(self.options.output, 'a' if checkpoint.last_position > 0 else 'w') as outfile:
 
                     # Checkpoint konumuna git
                     if checkpoint.last_position > 0:
