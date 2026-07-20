@@ -87,6 +87,8 @@ pytest
 
 > WordlistOptimizer's interactive `q`/`c` stop/checkpoint keys use `msvcrt` and are Windows-only; the rest of the tool (including filtering and multi-processing) runs on Linux and macOS as well.
 
+> **Performance:** both tools are pure-Python and CPU-bound. WordlistOptimizer filters in parallel across CPU cores; PassGenerator generates a few million combinations per second per core (use `--no-dedup` or `--max-memory`/`--disk-dedup` for very large runs). For a further multiplier, run either tool under [PyPy](https://www.pypy.org/) (e.g. `pypy3 PassGenerator.py ...`) — no code changes needed.
+
 ## 🛠️ Tools
 
 ### 🔑 PassGenerator
