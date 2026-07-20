@@ -32,6 +32,15 @@ CHECKPOINT_INTERVAL = 10_000
 # How often (in written combinations) to commit the on-disk dedup database
 DISK_DEDUP_COMMIT_INTERVAL = 50_000
 
+# Output lines buffered before a single bulk write
+WRITE_BATCH = 2_000
+
+# Combinations counted before a single progress-bar update
+PROGRESS_UPDATE_BATCH = 1_000
+
+# How often (in written combinations) to measure dedup memory for the warning/cap
+MEMORY_CHECK_INTERVAL = 10_000
+
 def check_disk_space(path):
     """Free bytes on the filesystem that holds `path`'s directory, or None if unknown."""
     try:
@@ -154,34 +163,43 @@ def generate_base_combinations(words, min_length, max_length, word_start=None, w
                     combined = combined + word_end
                 yield combined
 
-def apply_modifications(word, modifiers):
-    """Apply modifications in a specific order"""
-    results = [word]  # Start with original word
-    modified = []
+def compile_modifiers(modifiers):
+    """Precompute modifier flags once so the hot loop avoids per-word dict lookups."""
+    return (
+        bool(modifiers.get('uppercase')),
+        bool(modifiers.get('capitalize')),
+        bool(modifiers.get('reverse')),
+        bool(modifiers.get('reverse_capitalize')),
+        bool(modifiers.get('reverse_upper')),
+        bool(modifiers.get('leet')),
+    )
 
-    # First apply case modifications
-    if modifiers.get('uppercase'):
-        modified.append(word.upper())
-    if modifiers.get('capitalize'):
-        modified.append(word.capitalize())
-    results.extend(modified)
-
-    # Then apply reverse modifications
-    if any([modifiers.get('reverse'), modifiers.get('reverse_capitalize'), modifiers.get('reverse_upper')]):
+def apply_flags(word, flags):
+    """Apply modifications from precompiled flags. Produces the same list (and order)
+    as :func:`apply_modifications`, but without per-call dictionary lookups."""
+    uppercase, capitalize, reverse, reverse_capitalize, reverse_upper, leet = flags
+    results = [word]
+    # Case modifications
+    if uppercase:
+        results.append(word.upper())
+    if capitalize:
+        results.append(word.capitalize())
+    # Reverse modifications
+    if reverse or reverse_capitalize or reverse_upper:
         reversed_word = word[::-1]
-        reverse_results = [reversed_word]
-        if modifiers.get('reverse_capitalize'):
-            reverse_results.append(reversed_word.capitalize())
-        if modifiers.get('reverse_upper'):
-            reverse_results.append(reversed_word.upper())
-        results.extend(reverse_results)
-
-    # Finally apply leet speak
-    if modifiers.get('leet'):
-        leet_results = [leet_convert(w) for w in results]
-        results.extend(leet_results)
-
+        results.append(reversed_word)
+        if reverse_capitalize:
+            results.append(reversed_word.capitalize())
+        if reverse_upper:
+            results.append(reversed_word.upper())
+    # Leet speak (applied to everything produced so far)
+    if leet:
+        results.extend([leet_convert(w) for w in results])
     return results
+
+def apply_modifications(word, modifiers):
+    """Apply modifications in a specific order (thin wrapper over the fast path)."""
+    return apply_flags(word, compile_modifiers(modifiers))
 
 def write_unique(file, word, seen):
     """Write word to file if not seen before"""
@@ -248,7 +266,7 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
                             existing_word = line.rstrip('\n')
                             if existing_word and existing_word not in seen:
                                 seen.add(existing_word)
-                                seen_bytes += sys.getsizeof(existing_word)
+                                seen_bytes += 49 + len(existing_word)
                     written = len(seen)
                 else:
                     written = checkpoint['written']
@@ -283,7 +301,20 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
             memory_warned = False
             stop = False
             base_index = 0
+            pending = 0
             max_memory_bytes = max_memory_mb * 1024 * 1024 if max_memory_mb else None
+
+            # Precompute the modifier plan and dedup mode once (kept out of the hot loop)
+            mod_flags = compile_modifiers(modifiers)
+            has_modifiers = any(mod_flags)
+            in_memory_dedup = dedup and not disk_dedup
+
+            out_buffer = []
+
+            def flush_buffer():
+                if out_buffer:
+                    file.write('\n'.join(out_buffer) + '\n')
+                    out_buffer.clear()
 
             try:
                 # Generate and process combinations
@@ -292,24 +323,29 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
                         base_index += 1
                         continue
 
-                    # apply_modifications() yields the original word first, then its variants
-                    for word in apply_modifications(base_word, modifiers):
+                    # apply_flags() yields the original word first, then its variants
+                    words = apply_flags(base_word, mod_flags) if has_modifiers else (base_word,)
+                    for word in words:
                         if disk_dedup:
                             disk_cur.execute("INSERT OR IGNORE INTO words(w) VALUES(?)", (word,))
-                            is_new = disk_cur.rowcount == 1
-                            if is_new:
-                                file.write(word + '\n')
-                        elif dedup:
-                            is_new = write_unique(file, word, seen)
-                        else:
-                            # Constant-memory streaming: write everything, keep no set
-                            file.write(word + '\n')
-                            is_new = True
-                        if not is_new:
-                            continue
+                            if disk_cur.rowcount != 1:
+                                continue
+                        elif in_memory_dedup:
+                            if word in seen:
+                                continue
+                            seen.add(word)
+                            seen_bytes += 49 + len(word)  # cheap CPython string-size estimate
+
+                        # Buffered write (bulk-flushed to cut per-line overhead)
+                        out_buffer.append(word)
+                        if len(out_buffer) >= WRITE_BATCH:
+                            flush_buffer()
 
                         written += 1
-                        progress_bar.update(1)
+                        pending += 1
+                        if pending >= PROGRESS_UPDATE_BATCH:
+                            progress_bar.update(pending)
+                            pending = 0
 
                         if limit and written >= limit:
                             stop = True
@@ -318,18 +354,15 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
                         if disk_dedup:
                             if written % DISK_DEDUP_COMMIT_INTERVAL == 0:
                                 disk_conn.commit()
-                        elif dedup:
-                            seen_bytes += sys.getsizeof(word)
-
-                            # Live memory indicator in the progress bar (cheap: periodic)
+                        elif in_memory_dedup:
+                            # Live memory indicator (periodic)
                             if written % MEMORY_INDICATOR_INTERVAL == 0:
                                 progress_bar.set_postfix_str(
                                     f"mem ~{(sys.getsizeof(seen) + seen_bytes) / (1024*1024):.0f}MB")
 
-                            # Total dedup memory = set container + stored strings. Only
-                            # measured while it can still change an outcome, to keep the
-                            # per-item cost off large unbounded runs.
-                            if max_memory_bytes or not memory_warned:
+                            # Memory warning / hard cap, measured only periodically so the
+                            # per-item cost stays off large runs.
+                            if (max_memory_bytes or not memory_warned) and written % MEMORY_CHECK_INTERVAL == 0:
                                 used_bytes = sys.getsizeof(seen) + seen_bytes
                                 if not memory_warned and used_bytes >= MEMORY_WARNING_BYTES:
                                     memory_warned = True
@@ -349,18 +382,28 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
 
                     # Persist a resume checkpoint periodically
                     if resume and base_index % CHECKPOINT_INTERVAL == 0:
+                        flush_buffer()
                         file.flush()
                         save_checkpoint(checkpoint_file, signature, base_index, written)
 
             except KeyboardInterrupt:
                 if resume:
+                    flush_buffer()
                     file.flush()
                     save_checkpoint(checkpoint_file, signature, base_index, written)
+                    if pending:
+                        progress_bar.update(pending)
                     progress_bar.close()
                     print(f"\n{Fore.YELLOW}Interrupted; checkpoint saved. "
                           f"Re-run with --resume to continue.{Style.RESET_ALL}")
                     return
                 raise
+            finally:
+                # Ensure buffered output is written on every exit path
+                flush_buffer()
+
+            if pending:
+                progress_bar.update(pending)
 
             # Update progress bar to 100% if needed
             if progress_bar.n < total_combinations:

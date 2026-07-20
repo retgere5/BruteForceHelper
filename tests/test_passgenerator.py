@@ -8,17 +8,16 @@ import PassGenerator as pg
 
 
 def _interrupt_after(monkeypatch, n):
-    """Patch apply_modifications to raise KeyboardInterrupt after n calls."""
-    real = pg.apply_modifications
-    calls = {"n": 0}
+    """Patch generate_base_combinations to raise KeyboardInterrupt after n base words."""
+    real = pg.generate_base_combinations
 
-    def fake(word, mods):
-        calls["n"] += 1
-        if calls["n"] > n:
-            raise KeyboardInterrupt
-        return real(word, mods)
+    def fake(*args, **kwargs):
+        for i, base_word in enumerate(real(*args, **kwargs)):
+            if i >= n:
+                raise KeyboardInterrupt
+            yield base_word
 
-    monkeypatch.setattr(pg, "apply_modifications", fake)
+    monkeypatch.setattr(pg, "generate_base_combinations", fake)
 
 
 def _mods(**over):
@@ -192,7 +191,8 @@ def test_low_disk_space_warning(tmp_path, monkeypatch, capsys):
 
 
 def test_memory_warning(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(pg, "MEMORY_WARNING_BYTES", 5)  # trip on the first word
+    monkeypatch.setattr(pg, "MEMORY_WARNING_BYTES", 5)  # trip almost immediately
+    monkeypatch.setattr(pg, "MEMORY_CHECK_INTERVAL", 1)  # measure every combination
     pg.generate_and_save_combinations(["a", "b"], str(tmp_path / "o.txt"), min_length=1, max_length=None)
     assert "holding" in capsys.readouterr().out.lower()
 
