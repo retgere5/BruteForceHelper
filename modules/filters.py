@@ -89,7 +89,20 @@ class PasswordFilter:
             'l': ['1'],
             'z': ['2']
         }
-    
+        # Precompiled patterns (compiled once, reused per password)
+        self._re_repetitive = re.compile(r'(.)\1{3,}')
+        self._re_year = re.compile(r'19\d{2}|20\d{2}')
+        self._re_dates = [re.compile(p) for p in (
+            r'\d{2}[.-/]\d{2}[.-/]\d{4}',  # DD.MM.YYYY
+            r'\d{4}[.-/]\d{2}[.-/]\d{2}',  # YYYY.MM.DD
+            r'\d{8}',                      # DDMMYYYY
+        )]
+        self._re_phones = [re.compile(p) for p in (
+            r'05\d{9}',    # Türk GSM
+            r'5\d{9}',     # Başında 0 olmayan GSM
+            r'\+905\d{9}',  # Uluslararası format
+        )]
+
     def is_valid_password(self, password, options, stats):
         """Şifrenin geçerli olup olmadığını kontrol eder."""
         # Minimum uzunluk kontrolü
@@ -98,7 +111,7 @@ class PasswordFilter:
             return False
         
         # Tekrar eden karakterler
-        if options.repetitive_chars and re.search(r'(.)\1{3,}', password):
+        if options.repetitive_chars and self._re_repetitive.search(password):
             stats.update('repetitive_chars')
             return False
         
@@ -204,7 +217,7 @@ class PasswordFilter:
     
     def _is_year_pattern(self, password):
         """Yıl formatını kontrol eder."""
-        return bool(re.search(r'19\d{2}|20\d{2}', password))
+        return bool(self._re_year.search(password))
     
     def _is_single_char_type(self, password):
         """Şifre tek bir karakter kategorisinden mi oluşuyor (hepsi rakam / hepsi
@@ -231,27 +244,11 @@ class PasswordFilter:
     
     def _is_date_pattern(self, password):
         """Tarih formatını kontrol eder."""
-        date_patterns = [
-            r'\d{2}[.-/]\d{2}[.-/]\d{4}',  # DD.MM.YYYY
-            r'\d{4}[.-/]\d{2}[.-/]\d{2}',  # YYYY.MM.DD
-            r'\d{8}'  # DDMMYYYY
-        ]
-        for pattern in date_patterns:
-            if re.search(pattern, password):
-                return True
-        return False
-    
+        return any(pattern.search(password) for pattern in self._re_dates)
+
     def _is_phone_pattern(self, password):
         """Telefon numarası formatını kontrol eder."""
-        phone_patterns = [
-            r'05\d{9}',  # Türk GSM
-            r'5\d{9}',   # Başında 0 olmayan GSM
-            r'\+905\d{9}'  # Uluslararası format
-        ]
-        for pattern in phone_patterns:
-            if re.search(pattern, password):
-                return True
-        return False
+        return any(pattern.search(password) for pattern in self._re_phones)
     
     def _is_leet_speak(self, password):
         """Leet speak kontrolü yapar."""
