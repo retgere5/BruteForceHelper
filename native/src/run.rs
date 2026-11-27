@@ -4,7 +4,7 @@
 //! While it runs the program reports on stderr, one line at a time:
 //!
 //! ```text
-//! P <lines looked at> <lines written> <bytes the dedup set holds>     about ten times a second
+//! P <lines looked at> <lines written> <bytes the dedup set holds>     ten times a second, sooner at first
 //! R {"written":..,"processed":..,"stopped_by":..,"memory":..,"dedup":..,"threads":..}   at the end
 //! E job|io <message>                                                  instead of R, when it fails
 //! ```
@@ -552,20 +552,26 @@ struct Reporter {
 impl Reporter {
     fn start(meter: Arc<Meter>, stop: Arc<AtomicBool>) -> Reporter {
         let (done, wait) = mpsc::channel::<()>();
-        let thread = thread::spawn(move || loop {
-            let line = format!(
-                "P {} {} {}\n",
-                meter.processed.load(Ordering::Relaxed),
-                meter.written.load(Ordering::Relaxed),
-                meter.memory.load(Ordering::Relaxed),
-            );
-            if io::stderr().write_all(line.as_bytes()).is_err() {
-                // nobody is listening any more: wind the run down
-                stop.store(true, Ordering::Relaxed);
-                return;
-            }
-            if wait.recv_timeout(REPORT_EVERY) != Err(RecvTimeoutError::Timeout) {
-                return;
+        let thread = thread::spawn(move || {
+            // the first reports come quickly, so a short run shows progress
+            // (and can be stopped) before it is over
+            let mut pause = REPORT_EVERY / 16;
+            loop {
+                let line = format!(
+                    "P {} {} {}\n",
+                    meter.processed.load(Ordering::Relaxed),
+                    meter.written.load(Ordering::Relaxed),
+                    meter.memory.load(Ordering::Relaxed),
+                );
+                if io::stderr().write_all(line.as_bytes()).is_err() {
+                    // nobody is listening any more: wind the run down
+                    stop.store(true, Ordering::Relaxed);
+                    return;
+                }
+                if wait.recv_timeout(pause) != Err(RecvTimeoutError::Timeout) {
+                    return;
+                }
+                pause = (pause * 2).min(REPORT_EVERY);
             }
         });
         Reporter { done, thread }

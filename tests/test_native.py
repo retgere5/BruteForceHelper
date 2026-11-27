@@ -146,6 +146,8 @@ def _same_run(monkeypatch, tmp_path, words, shortest, longest, **options):
     assert (tmp_path / 'native.out').read_bytes() == (tmp_path / 'python.out').read_bytes()
     for key in ('written', 'stopped_by', 'filtered', 'filtered_total', 'skipped'):
         assert native[key] == python[key], key
+    for name in ('native.out', 'python.out'):
+        (tmp_path / name).unlink()  # some of these files are large
     return native
 
 
@@ -305,6 +307,7 @@ def test_stop_event_ends_the_core_and_keeps_whole_lines(core, tmp_path, monkeypa
         lines.seek(-len(last), os.SEEK_END)
         assert lines.read() == last
     assert head == [_line(number).encode('ascii') + ending for number in range(len(head))]
+    out.unlink()
 
 
 def test_an_error_in_the_callers_callback_stops_the_core(core, tmp_path, monkeypatch):
@@ -333,7 +336,9 @@ def _core_run(core, tmp_path, threads, words, shortest, longest, mods=(), prefix
     report = done.stderr.decode('utf-8', 'replace')
     assert done.returncode == 0, report
     summary = [line[2:] for line in report.splitlines() if line.startswith('R ')]
-    return out.read_bytes(), pg.json.loads(summary[-1])
+    written = out.read_bytes()
+    out.unlink()
+    return written, pg.json.loads(summary[-1])
 
 
 THREADED_RUNS = [
@@ -361,9 +366,10 @@ def test_any_number_of_threads_writes_the_same_bytes(core, tmp_path, job):
             assert summary[key] == first[key], (threads, key)
 
 
-def test_threads_default_to_the_cpu_count(core, tmp_path):
+def test_threads_default_to_the_cpus_at_hand(core, tmp_path):
     _, summary = _core_run(core, tmp_path, 0, ['a', 'b'], 1, 3)
-    assert summary['threads'] == os.cpu_count()
+    # a container may hand the process fewer CPUs than the machine has
+    assert 1 <= summary['threads'] <= os.cpu_count()
 
 
 # --- deduplication --------------------------------------------------------------------
@@ -406,6 +412,7 @@ def test_memory_cap_stops_the_core(core, tmp_path, monkeypatch, capsys):
     assert (result['engine'], result['stopped_by']) == ('native', 'memory')
     assert 'Memory limit reached' in capsys.readouterr().out
     lines = out.read_text(encoding='ascii').split()
+    out.unlink()
     assert len(lines) == result['written'] == len(set(lines))
     assert 10_000 < len(lines) < 1_000_000
     assert lines[:5000] == pg.preview_combinations(words, 1, 12, count=5000, time_budget=60)
@@ -432,6 +439,8 @@ def test_gzip_output_unpacks_to_pythons_lines(core, tmp_path, monkeypatch, words
     assert native['written'] == python['written']
     with gzip.open(tmp_path / 'native.gz') as ours, gzip.open(tmp_path / 'python.gz') as theirs:
         assert ours.read() == theirs.read()
+    for name in ('native.gz', 'python.gz'):
+        (tmp_path / name).unlink()
 
 
 def test_a_gz_name_alone_turns_compression_on(core, tmp_path, monkeypatch):

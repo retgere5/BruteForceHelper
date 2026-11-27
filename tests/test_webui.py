@@ -211,13 +211,18 @@ def test_gzip_output(ui):
 
 def test_generate_can_be_stopped(ui):
     _, job = ui.json("POST", "/api/generate", BIG_RUN)
-    time.sleep(0.3)
+    # stop as soon as something was written: the Rust core fills the disk quickly
+    deadline = time.monotonic() + 15
+    while not ui.json("GET", f"/api/jobs/{job['id']}")[1]["progress"].get("done"):
+        assert time.monotonic() < deadline, "the job wrote nothing"
+        time.sleep(0.005)
     status, _ = ui.json("POST", f"/api/jobs/{job['id']}/stop")
     assert status == 200
     job = ui.wait(job["id"])
     assert job["state"] == "stopped"
     assert job["result"]["stopped_by"] == "user"
     assert job["result"]["written"] > 0
+    os.remove(job["result"]["file"]["path"])  # can be large by the time the stop lands
 
 
 def test_running_job_limit(ui, monkeypatch):
@@ -226,7 +231,7 @@ def test_running_job_limit(ui, monkeypatch):
     status, data = ui.json("POST", "/api/generate", {"words": ["a"]})
     assert status == 429 and data["error"] == "busy"
     ui.json("POST", f"/api/jobs/{first['id']}/stop")
-    ui.wait(first["id"])
+    os.remove(ui.wait(first["id"])["result"]["file"]["path"])
 
 
 # --- cleaner and analyzer -------------------------------------------------------
