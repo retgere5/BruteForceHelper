@@ -71,6 +71,17 @@ class FilterStats:
         self.display_counter = 0
 
 class PasswordFilter:
+    # Rules that look for a piece inside the password: once one of them matches,
+    # it also matches every longer string containing this one, so a generator can
+    # drop a whole branch as soon as its prefix matches. The other rules
+    # (min_length_filter, number_only, letter_only, single_char_type) judge the
+    # password as a whole and can change their verdict when text is added.
+    SUBSTRING_RULES = (
+        'repetitive_chars', 'pattern_repetition', 'sequential_chars', 'keyboard_patterns',
+        'special_patterns', 'year_patterns', 'common_words', 'date_patterns',
+        'phone_patterns', 'leet_speak',
+    )
+
     def __init__(self):
         self.keyboard_patterns = [
             'qwerty', 'asdfgh', 'zxcvbn', 'qwertz', 'azerty'
@@ -91,17 +102,27 @@ class PasswordFilter:
         }
         # Precompiled patterns (compiled once, reused per password)
         self._re_repetitive = re.compile(r'(.)\1{3,}')
+        # two or more characters followed by the same characters again ("abab", "1a21a2")
+        self._re_square = re.compile(r'(.{2,})\1', re.DOTALL)
         self._re_year = re.compile(r'19\d{2}|20\d{2}')
-        self._re_dates = [re.compile(p) for p in (
+        self._re_date = re.compile('|'.join((
             r'\d{2}[.-/]\d{2}[.-/]\d{4}',  # DD.MM.YYYY
             r'\d{4}[.-/]\d{2}[.-/]\d{2}',  # YYYY.MM.DD
             r'\d{8}',                      # DDMMYYYY
-        )]
-        self._re_phones = [re.compile(p) for p in (
+        )))
+        self._re_phone = re.compile('|'.join((
             r'05\d{9}',    # Türk GSM
             r'5\d{9}',     # Başında 0 olmayan GSM
             r'\+905\d{9}',  # Uluslararası format
-        )]
+        )))
+        # any 4-character run of the digits or the alphabet, forwards or backwards
+        runs = sorted({
+            run
+            for sequence in ('0123456789', 'abcdefghijklmnopqrstuvwxyz')
+            for i in range(len(sequence) - 3)
+            for run in (sequence[i:i + 4], sequence[i:i + 4][::-1])
+        })
+        self._re_sequential = re.compile('|'.join(map(re.escape, runs)))
 
     def is_valid_password(self, password, options, stats):
         """Şifrenin geçerli olup olmadığını kontrol eder."""
@@ -111,7 +132,7 @@ class PasswordFilter:
             return False
         
         # Tekrar eden karakterler
-        if options.repetitive_chars and self._re_repetitive.search(password):
+        if options.repetitive_chars and self._has_repetitive_chars(password):
             stats.update('repetitive_chars')
             return False
         
@@ -176,28 +197,38 @@ class PasswordFilter:
             return False
         
         return True
-    
+
+    def substring_rules(self, options):
+        """(name, check) for every active rule in SUBSTRING_RULES, in the order
+        is_valid_password() applies them; check(text) is True when that rule
+        would remove text."""
+        checks = {
+            'repetitive_chars': self._has_repetitive_chars,
+            'pattern_repetition': self._has_pattern_repetition,
+            'sequential_chars': self._is_sequential,
+            'keyboard_patterns': self._is_keyboard_pattern,
+            'special_patterns': self._is_special_pattern,
+            'year_patterns': self._is_year_pattern,
+            'common_words': self._is_common_word,
+            'date_patterns': self._is_date_pattern,
+            'phone_patterns': self._is_phone_pattern,
+            'leet_speak': self._is_leet_speak,
+        }
+        return [(name, checks[name]) for name in self.SUBSTRING_RULES if getattr(options, name, False)]
+
+    def _has_repetitive_chars(self, password):
+        """Aynı karakter art arda 4 ya da daha fazla kez geçiyor mu?"""
+        return self._re_repetitive.search(password) is not None
+
     def _has_pattern_repetition(self, password):
-        """Tekrar eden kalıpları kontrol eder."""
-        for i in range(2, len(password) // 2 + 1):
-            for j in range(len(password) - i * 2 + 1):
-                pattern = password[j:j + i]
-                if pattern == password[j + i:j + i * 2]:
-                    return True
-        return False
-    
+        """Tekrar eden kalıpları kontrol eder: en az 2 karakterlik bir parça hemen
+        ardından bir kez daha geliyor mu ("abab", "1a21a2")?"""
+        return self._re_square.search(password) is not None
+
     def _is_sequential(self, password):
-        """Sıralı karakterleri kontrol eder."""
-        sequences = ['0123456789', 'abcdefghijklmnopqrstuvwxyz']
-        lower_pass = password.lower()
-        
-        for seq in sequences:
-            for i in range(len(seq) - 3):
-                if seq[i:i + 4] in lower_pass:
-                    return True
-                if seq[i:i + 4][::-1] in lower_pass:  # Ters sıra kontrolü
-                    return True
-        return False
+        """Sıralı karakterleri kontrol eder: küçük harfe çevrilmiş şifrede rakamların
+        ya da alfabenin 4 karakterlik bir dizisi (ileri ya da geri) geçiyor mu?"""
+        return self._re_sequential.search(password.lower()) is not None
     
     def _is_keyboard_pattern(self, password):
         """Klavye düzenindeki kalıpları kontrol eder."""
@@ -229,9 +260,9 @@ class PasswordFilter:
         """
         if not password:
             return False
-        has_digit = any(c.isdigit() for c in password)
-        has_alpha = any(c.isalpha() for c in password)
-        has_other = any(not c.isalnum() for c in password)
+        has_digit = any(map(str.isdigit, password))
+        has_alpha = any(map(str.isalpha, password))
+        has_other = not password.isalnum()  # some character is neither a letter nor a number
         return (has_digit + has_alpha + has_other) == 1
     
     def _is_common_word(self, password):
@@ -244,11 +275,11 @@ class PasswordFilter:
     
     def _is_date_pattern(self, password):
         """Tarih formatını kontrol eder."""
-        return any(pattern.search(password) for pattern in self._re_dates)
+        return self._re_date.search(password) is not None
 
     def _is_phone_pattern(self, password):
         """Telefon numarası formatını kontrol eder."""
-        return any(pattern.search(password) for pattern in self._re_phones)
+        return self._re_phone.search(password) is not None
     
     def _is_leet_speak(self, password):
         """Leet speak kontrolü yapar."""
@@ -257,4 +288,4 @@ class PasswordFilter:
             for replacement in replacements:
                 if replacement in password and char in lower_pass:
                     return True
-        return False 
+        return False
