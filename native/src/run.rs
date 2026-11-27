@@ -5,24 +5,25 @@
 //!
 //! ```text
 //! P <lines looked at> <lines written> <bytes the dedup set holds>     about ten times a second
-//! R {"written":..,"processed":..,"stopped_by":..,"memory":..,"dedup":..}   once, at the end
+//! R {"written":..,"processed":..,"stopped_by":..,"memory":..,"dedup":..,"threads":..}   at the end
 //! E job|io <message>                                                  instead of R, when it fails
 //! ```
 //!
 //! A `stop` line on stdin ends the run early; what was written stays, and it
 //! is always a whole number of lines from the start of the full output.
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufRead, BufWriter, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
 use crate::dedup::Seen;
 use crate::spec::Spec;
-use crate::walk::{Block, Plan, Splitter, Walker};
+use crate::walk::{Block, Plan, Splitter, Task, Walker};
 use crate::Failure;
 
 const REPORT_EVERY: Duration = Duration::from_millis(100);
@@ -51,7 +52,11 @@ pub fn generate(spec: &Spec) -> Result<(), Failure> {
         &plan,
         Arc::clone(&meter),
     );
-    let finished = run(&plan, &stop, &mut sink)?;
+    let threads = match spec.threads {
+        0 => thread::available_parallelism().map_or(1, |count| count.get()),
+        count => count,
+    };
+    let finished = run(&plan, &stop, &mut sink, threads)?;
     sink.out.flush()?;
 
     reporter.finish();
@@ -60,21 +65,33 @@ pub fn generate(spec: &Spec) -> Result<(), Failure> {
         None if !finished => "\"user\"".to_string(),
         None => "null".to_string(),
     };
-    let summary =
-        format!(
-        "R {{\"written\":{},\"processed\":{},\"stopped_by\":{},\"memory\":{},\"dedup\":\"{}\"}}\n",
+    let dedup = if sink.seen.is_some() {
+        "memory"
+    } else {
+        "none"
+    };
+    let summary = format!(
+        "R {{\"written\":{},\"processed\":{},\"stopped_by\":{stopped_by},\"memory\":{},\
+         \"dedup\":\"{dedup}\",\"threads\":{threads}}}\n",
         sink.written,
         sink.processed,
-        stopped_by,
         sink.memory(),
-        if sink.seen.is_some() { "memory" } else { "none" },
     );
     io::stderr().write_all(summary.as_bytes())?;
     Ok(())
 }
 
-/// Does the tasks one after another. True when the whole tree was done.
-fn run(plan: &Plan, stop: &AtomicBool, sink: &mut Sink<impl Write>) -> io::Result<bool> {
+/// Does the job on `threads` threads. True when the whole tree was done,
+/// false when a stop request cut it short.
+fn run(
+    plan: &Plan,
+    stop: &AtomicBool,
+    sink: &mut Sink<impl Write>,
+    threads: usize,
+) -> io::Result<bool> {
+    if threads > 1 {
+        return run_in_parallel(plan, stop, sink, threads);
+    }
     let mut splitter = Splitter::new(plan.budget());
     let mut walker = Walker::new(plan, sink.seen.is_some());
     let mut block = Block::default();
@@ -90,6 +107,118 @@ fn run(plan: &Plan, stop: &AtomicBool, sink: &mut Sink<impl Write>) -> io::Resul
         sink.take(&block)?;
     }
     Ok(true)
+}
+
+/// Tasks a thread may have out before the oldest one is written.
+const WINDOW_PER_THREAD: usize = 4;
+
+/// The tasks, shared by the threads that build them.
+///
+/// Blocks are written in task order, so a block that is ready early has to
+/// wait for the ones before it. No more than `window` tasks are out at a time
+/// (handed out, not yet written): that bounds the memory waiting blocks take,
+/// however uneven the tasks are.
+struct Feed {
+    state: Mutex<FeedState>,
+    room: Condvar,
+    window: usize,
+}
+
+struct FeedState {
+    splitter: Splitter,
+    out: usize,
+    closed: bool,
+    exhausted: bool,
+}
+
+impl Feed {
+    /// The next task, once there is room for it; None when no more should start.
+    fn next(&self, plan: &Plan, stop: &AtomicBool) -> Option<Task> {
+        let mut state = self.state.lock().unwrap();
+        loop {
+            if state.closed || stop.load(Ordering::Relaxed) {
+                return None;
+            }
+            if state.out < self.window {
+                break;
+            }
+            state = self.room.wait(state).unwrap();
+        }
+        let task = state.splitter.next(plan);
+        match task {
+            Some(_) => state.out += 1,
+            None => state.exhausted = true,
+        }
+        task
+    }
+
+    /// A task's block has been dealt with; `close` when no more are wanted.
+    fn done(&self, close: bool) {
+        let mut state = self.state.lock().unwrap();
+        state.out -= 1;
+        state.closed |= close;
+        self.room.notify_all();
+    }
+}
+
+fn run_in_parallel(
+    plan: &Plan,
+    stop: &AtomicBool,
+    sink: &mut Sink<impl Write>,
+    threads: usize,
+) -> io::Result<bool> {
+    let hashing = sink.seen.is_some();
+    let feed = Feed {
+        state: Mutex::new(FeedState {
+            splitter: Splitter::new(plan.budget()),
+            out: 0,
+            closed: false,
+            exhausted: false,
+        }),
+        room: Condvar::new(),
+        window: threads * WINDOW_PER_THREAD,
+    };
+    // written blocks go back to the threads, so their buffers are reused
+    let spare = Mutex::new(Vec::<Block>::new());
+    let (ready, blocks) = mpsc::channel::<Block>();
+    let mut failure = None;
+    thread::scope(|scope| {
+        for _ in 0..threads {
+            let ready = ready.clone();
+            let (feed, spare) = (&feed, &spare);
+            scope.spawn(move || {
+                let mut walker = Walker::new(plan, hashing);
+                while let Some(task) = feed.next(plan, stop) {
+                    let mut block = spare.lock().unwrap().pop().unwrap_or_default();
+                    block.clear();
+                    block.seq = task.seq;
+                    walker.fill(&task, &mut block);
+                    if ready.send(block).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+        drop(ready);
+        // this thread puts the blocks back in order and writes them
+        let mut early: HashMap<u64, Block> = HashMap::new();
+        let mut turn = 0;
+        for block in blocks {
+            early.insert(block.seq, block);
+            while let Some(block) = early.remove(&turn) {
+                turn += 1;
+                if failure.is_none() && sink.ended.is_none() {
+                    failure = sink.take(&block).err();
+                }
+                spare.lock().unwrap().push(block);
+                feed.done(failure.is_some() || sink.ended.is_some());
+            }
+        }
+    });
+    match failure {
+        Some(error) => Err(error),
+        None => Ok(feed.state.into_inner().unwrap().exhausted || sink.ended.is_some()),
+    }
 }
 
 /// Where the blocks end up: drops repeats, stops at the limit, writes the rest.
@@ -284,16 +413,22 @@ mod tests {
     }
 
     /// Runs a job into memory: (output, written, processed, why it ended).
+    /// Every job is done on one thread and on three, which have to agree.
     fn outcome(spec: &Spec) -> (String, u64, u64, Option<&'static str>) {
         let plan = Plan::new(spec).unwrap();
-        let mut sink = Sink::new(Vec::new(), spec, &plan, Arc::new(Meter::default()));
-        assert!(run(&plan, &AtomicBool::new(false), &mut sink).unwrap());
-        (
-            String::from_utf8(sink.out).unwrap(),
-            sink.written,
-            sink.processed,
-            sink.ended,
-        )
+        let on = |threads| {
+            let mut sink = Sink::new(Vec::new(), spec, &plan, Arc::new(Meter::default()));
+            assert!(run(&plan, &AtomicBool::new(false), &mut sink, threads).unwrap());
+            (
+                String::from_utf8(sink.out).unwrap(),
+                sink.written,
+                sink.processed,
+                sink.ended,
+            )
+        };
+        let single = on(1);
+        assert_eq!(on(3), single);
+        single
     }
 
     #[test]
@@ -351,7 +486,8 @@ mod tests {
         let job = spec(&["a", "b"], 3);
         let plan = Plan::new(&job).unwrap();
         let mut sink = Sink::new(Vec::new(), &job, &plan, Arc::new(Meter::default()));
-        assert!(!run(&plan, &AtomicBool::new(true), &mut sink).unwrap());
+        assert!(!run(&plan, &AtomicBool::new(true), &mut sink, 1).unwrap());
+        assert!(!run(&plan, &AtomicBool::new(true), &mut sink, 3).unwrap());
         assert_eq!(sink.written, 0);
     }
 

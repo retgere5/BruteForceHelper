@@ -317,3 +317,50 @@ def test_an_error_in_the_callers_callback_stops_the_core(core, tmp_path, monkeyp
     with pytest.raises(KeyboardInterrupt):
         pg.generate_and_save_combinations(list('abcdefghij'), str(out), 1, 9, quiet=True, progress=interrupt)
     out.unlink()  # the core has let go of the file
+
+
+# --- threads --------------------------------------------------------------------------
+
+def _core_run(core, tmp_path, threads, words, shortest, longest, mods=(), prefix=None, suffix=None,
+              dedup=True, limit=None, max_memory_bytes=None, use_gzip=False):
+    """Runs a job in the core directly: (the bytes it wrote, its summary)."""
+    flags = tuple(key in mods for key in MOD_KEYS)
+    job = pg._native_job(words, shortest, longest, prefix, suffix, flags, dedup, limit, max_memory_bytes,
+                         use_gzip, threads)
+    out = tmp_path / f'threads-{threads}.out'
+    with open(out, 'wb') as output:
+        done = subprocess.run([core], input=job, stdout=output, stderr=subprocess.PIPE)
+    report = done.stderr.decode('utf-8', 'replace')
+    assert done.returncode == 0, report
+    summary = [line[2:] for line in report.splitlines() if line.startswith('R ')]
+    return out.read_bytes(), pg.json.loads(summary[-1])
+
+
+THREADED_RUNS = [
+    # each is large enough to be cut into many tasks
+    dict(words=list('abcdefgh'), shortest=1, longest=7),
+    dict(words=['a', 'b', 'ab', 'c', 'd', 'e'], shortest=2, longest=8),            # many repeats
+    dict(words=['ali', 'ış', 'İz', '1', 'x'], shortest=3, longest=11,
+         mods=('uppercase', 'capitalize', 'reverse_capitalize', 'turkish', 'leet'), prefix='ç', suffix='!'),
+    dict(words=list('abcdefgh'), shortest=1, longest=7, limit=777_777),
+    dict(words=['a', 'b', 'ab', 'c', 'd', 'e'], shortest=2, longest=8, limit=333_333),
+    dict(words=list('abcdefgh'), shortest=1, longest=7, dedup=False, mods=('uppercase',), limit=1_500_001),
+    dict(words=['a', 'bb'], shortest=20, longest=24),                              # deep and narrow
+]
+
+
+@pytest.mark.parametrize('job', THREADED_RUNS)
+def test_any_number_of_threads_writes_the_same_bytes(core, tmp_path, job):
+    single, first = _core_run(core, tmp_path, 1, **job)
+    assert first['threads'] == 1
+    for threads in (2, 5):
+        output, summary = _core_run(core, tmp_path, threads, **job)
+        assert summary['threads'] == threads
+        assert output == single
+        for key in ('written', 'processed', 'stopped_by'):
+            assert summary[key] == first[key], (threads, key)
+
+
+def test_threads_default_to_the_cpu_count(core, tmp_path):
+    _, summary = _core_run(core, tmp_path, 0, ['a', 'b'], 1, 3)
+    assert summary['threads'] == os.cpu_count()
