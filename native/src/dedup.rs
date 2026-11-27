@@ -18,11 +18,31 @@ pub struct Seen {
 }
 
 impl Seen {
-    pub fn new() -> Seen {
+    /// A set with a table sized for about `lines` lines, so that a run of
+    /// known size does not have to grow it on the way.
+    pub fn with_room(lines: u64) -> Seen {
+        let slots = (lines.saturating_mul(4) / 3 + 1).clamp(1 << 10, 1 << 32);
         Seen {
-            slots: vec![0; 1 << 10],
+            slots: vec![0; slots.next_power_of_two() as usize],
             filled: 0,
             chunks: Vec::new(),
+        }
+    }
+
+    /// Reads the slot a lookup of `hash` starts at. Doing this for a batch of
+    /// lines before looking them up lets their cache misses overlap.
+    pub fn peek(&self, hash: u64) -> u64 {
+        self.slots[hash as usize & (self.slots.len() - 1)]
+    }
+
+    /// For a slot peek() returned: reads the start of the line it points to,
+    /// if that line may be the one `hash` belongs to. The second half of
+    /// warming a lookup up; the value itself means nothing.
+    pub fn glance(&self, hash: u64, slot: u64) -> u8 {
+        if slot != 0 && slot >> PLACE_BITS == hash >> PLACE_BITS {
+            self.line(slot & PLACE).first().copied().unwrap_or(0)
+        } else {
+            0
         }
     }
 
@@ -95,19 +115,40 @@ impl Seen {
         self.slots = Vec::new();
         self.slots = vec![0; size];
         let mask = size - 1;
+        // (where the lookup starts, what the slot will hold), a batch at a time
+        let mut batch = [(0usize, 0u64); 32];
+        let mut ready = 0;
         for (index, chunk) in self.chunks.iter().enumerate() {
             let mut offset = 0;
             while offset < chunk.len() {
                 let (line, next) = entry(chunk, offset);
                 let hash = hash(line);
-                let mut at = hash as usize & mask;
-                while self.slots[at] != 0 {
-                    at = (at + 1) & mask;
+                let slot = (hash >> PLACE_BITS) << PLACE_BITS | place(index, offset);
+                batch[ready] = (hash as usize & mask, slot);
+                ready += 1;
+                if ready == batch.len() {
+                    settle(&mut self.slots, &batch);
+                    ready = 0;
                 }
-                self.slots[at] = (hash >> PLACE_BITS) << PLACE_BITS | place(index, offset);
                 offset = next;
             }
         }
+        settle(&mut self.slots, &batch[..ready]);
+    }
+}
+
+/// Puts a batch of slots into a table that has room for them. Every start is
+/// read before any slot is placed, so the cache misses of a batch overlap
+/// instead of being waited out one after another.
+fn settle(slots: &mut [u64], batch: &[(usize, u64)]) {
+    let mask = slots.len() - 1;
+    let touched = batch.iter().fold(0, |all, &(at, _)| all ^ slots[at]);
+    std::hint::black_box(touched);
+    for &(mut at, slot) in batch {
+        while slots[at] != 0 {
+            at = (at + 1) & mask;
+        }
+        slots[at] = slot;
     }
 }
 
@@ -188,7 +229,7 @@ mod tests {
 
     #[test]
     fn a_line_is_new_only_once() {
-        let mut seen = Seen::new();
+        let mut seen = Seen::with_room(0);
         assert!(add(&mut seen, b"abc"));
         assert!(add(&mut seen, b"abd"));
         assert!(add(&mut seen, b""));
@@ -199,7 +240,7 @@ mod tests {
 
     #[test]
     fn remembers_everything_while_the_table_grows() {
-        let mut seen = Seen::new();
+        let mut seen = Seen::with_room(0);
         let line = |n: u32| format!("line-{n}").into_bytes();
         for n in 0..200_000 {
             assert!(add(&mut seen, &line(n)), "{n} was new");
@@ -213,7 +254,7 @@ mod tests {
 
     #[test]
     fn lines_of_every_length_come_back_whole() {
-        let mut seen = Seen::new();
+        let mut seen = Seen::with_room(0);
         let text: Vec<u8> = (0..20_000).map(|n| (n % 251) as u8).collect();
         for len in (0..300).chain([1000, 16_383, 16_384, 20_000]) {
             assert!(add(&mut seen, &text[..len]), "{len} bytes were new");
@@ -224,8 +265,32 @@ mod tests {
     }
 
     #[test]
+    fn a_set_sized_for_its_lines_does_not_grow_its_table() {
+        assert_eq!(Seen::with_room(0).slots.len(), 1 << 10);
+        let mut seen = Seen::with_room(100_000);
+        assert_eq!(seen.slots.len(), 1 << 18);
+        for n in 0..100_000u32 {
+            assert!(add(&mut seen, format!("{n}").as_bytes()));
+        }
+        assert_eq!(seen.slots.len(), 1 << 18);
+    }
+
+    #[test]
+    fn a_lookup_can_be_warmed_up() {
+        let mut seen = Seen::with_room(0);
+        let known = hash(b"hello");
+        assert_eq!((seen.peek(known), seen.glance(known, 0)), (0, 0));
+        assert!(seen.insert(known, b"hello"));
+        let slot = seen.peek(known);
+        assert_ne!(slot, 0);
+        assert_eq!(seen.glance(known, slot), b'h');
+        // a slot that holds another hash's line is not followed
+        assert_eq!(seen.glance(!known, slot), 0);
+    }
+
+    #[test]
     fn lines_with_the_same_hash_stay_apart() {
-        let mut seen = Seen::new();
+        let mut seen = Seen::with_room(0);
         assert!(seen.insert(7, b"one"));
         assert!(seen.insert(7, b"two"));
         assert!(!seen.insert(7, b"one"));

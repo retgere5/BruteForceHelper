@@ -249,7 +249,7 @@ def test_low_disk_space_warning(tmp_path, monkeypatch, capsys):
     assert "low free disk space" in capsys.readouterr().out.lower()
 
 
-def test_memory_warning(tmp_path, monkeypatch, capsys):
+def test_memory_warning(tmp_path, monkeypatch, capsys, python_engine):
     monkeypatch.setattr(pg, "MEMORY_WARNING_BYTES", 5)  # trip almost immediately
     monkeypatch.setattr(pg, "MEMORY_CHECK_INTERVAL", 1)  # measure every combination
     pg.generate_and_save_combinations(["a", "b"], str(tmp_path / "o.txt"), min_length=1, max_length=None)

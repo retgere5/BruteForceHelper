@@ -364,3 +364,48 @@ def test_any_number_of_threads_writes_the_same_bytes(core, tmp_path, job):
 def test_threads_default_to_the_cpu_count(core, tmp_path):
     _, summary = _core_run(core, tmp_path, 0, ['a', 'b'], 1, 3)
     assert summary['threads'] == os.cpu_count()
+
+
+# --- deduplication --------------------------------------------------------------------
+
+def test_core_remembers_nothing_when_no_line_can_repeat(core, tmp_path):
+    for threads in (1, 3):
+        _, summary = _core_run(core, tmp_path, threads, ['admin', 'root', '2024'], 1, 12)
+        assert (summary['dedup'], summary['memory']) == ('unneeded', 0)
+
+
+@pytest.mark.parametrize('job', [
+    dict(words=['a', 'ab', 'b'], shortest=1, longest=4),                 # 'ab' is also 'a' + 'b'
+    dict(words=['a', 'b', 'a'], shortest=1, longest=3),                  # a word twice
+    dict(words=['a', 'b'], shortest=1, longest=3, mods=('uppercase',)),  # variations can repeat a line
+])
+def test_core_remembers_its_lines_when_they_can_repeat(core, tmp_path, job):
+    for threads in (1, 3):
+        _, summary = _core_run(core, tmp_path, threads, **job)
+        assert summary['dedup'] == 'memory' and summary['memory'] > 0
+
+
+def test_core_without_dedup_remembers_nothing(core, tmp_path):
+    _, summary = _core_run(core, tmp_path, 2, ['a', 'b', 'a'], 1, 3, dedup=False)
+    assert (summary['dedup'], summary['memory']) == ('none', 0)
+
+
+def test_core_run_warns_when_the_dedup_set_gets_large(core, tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv('BFH_NATIVE', raising=False)
+    monkeypatch.setattr(pg, 'MEMORY_WARNING_BYTES', 5)
+    result = pg.generate_and_save_combinations(['a', 'a'], str(tmp_path / 'o.txt'), 1, 3)
+    assert result['engine'] == 'native'
+    assert 'holding' in capsys.readouterr().out
+
+
+def test_memory_cap_stops_the_core(core, tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv('BFH_NATIVE', raising=False)
+    words = ['a', 'b', 'ab', 'c', 'd', 'e']     # lines repeat, so every written line is remembered
+    out = tmp_path / 'o.txt'
+    result = pg.generate_and_save_combinations(words, str(out), 1, 12, max_memory_mb=2)
+    assert (result['engine'], result['stopped_by']) == ('native', 'memory')
+    assert 'Memory limit reached' in capsys.readouterr().out
+    lines = out.read_text(encoding='ascii').split()
+    assert len(lines) == result['written'] == len(set(lines))
+    assert 10_000 < len(lines) < 1_000_000
+    assert lines[:5000] == pg.preview_combinations(words, 1, 12, count=5000, time_budget=60)

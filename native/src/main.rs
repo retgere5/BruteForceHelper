@@ -8,6 +8,7 @@
 
 mod dedup;
 mod run;
+mod sardinas;
 mod spec;
 mod text;
 mod walk;

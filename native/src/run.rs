@@ -22,6 +22,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::dedup::Seen;
+use crate::sardinas::spells_each_line_once;
 use crate::spec::Spec;
 use crate::walk::{Block, Plan, Splitter, Task, Walker};
 use crate::Failure;
@@ -46,16 +47,27 @@ pub fn generate(spec: &Spec) -> Result<(), Failure> {
     let meter = Arc::new(Meter::default());
     let reporter = Reporter::start(Arc::clone(&meter), Arc::clone(&stop));
 
+    let threads = match spec.threads {
+        0 => thread::available_parallelism().map_or(1, |count| count.get()),
+        count => count,
+    };
+    // without variations, words that spell every line one way cannot repeat a line
+    let words: Vec<&[u8]> = spec.words.iter().map(String::as_bytes).collect();
+    let dedup = if !spec.dedup {
+        "none"
+    } else if plan.shapes.len() == 1 && spells_each_line_once(&words) {
+        "unneeded"
+    } else {
+        "memory"
+    };
     let mut sink = Sink::new(
         BufWriter::with_capacity(1 << 20, output()?),
         spec,
         &plan,
         Arc::clone(&meter),
+        dedup == "memory",
+        threads,
     );
-    let threads = match spec.threads {
-        0 => thread::available_parallelism().map_or(1, |count| count.get()),
-        count => count,
-    };
     let finished = run(&plan, &stop, &mut sink, threads)?;
     sink.out.flush()?;
 
@@ -64,11 +76,6 @@ pub fn generate(spec: &Spec) -> Result<(), Failure> {
         Some(reason) => format!("\"{reason}\""),
         None if !finished => "\"user\"".to_string(),
         None => "null".to_string(),
-    };
-    let dedup = if sink.seen.is_some() {
-        "memory"
-    } else {
-        "none"
     };
     let summary = format!(
         "R {{\"written\":{},\"processed\":{},\"stopped_by\":{stopped_by},\"memory\":{},\
@@ -93,7 +100,7 @@ fn run(
         return run_in_parallel(plan, stop, sink, threads);
     }
     let mut splitter = Splitter::new(plan.budget());
-    let mut walker = Walker::new(plan, sink.seen.is_some());
+    let mut walker = Walker::new(plan, sink.remembers());
     let mut block = Block::default();
     while sink.ended.is_none() {
         if stop.load(Ordering::Relaxed) {
@@ -104,7 +111,7 @@ fn run(
         };
         block.clear();
         walker.fill(&task, &mut block);
-        sink.take(&block)?;
+        block = sink.take(block)?;
     }
     Ok(true)
 }
@@ -167,7 +174,7 @@ fn run_in_parallel(
     sink: &mut Sink<impl Write>,
     threads: usize,
 ) -> io::Result<bool> {
-    let hashing = sink.seen.is_some();
+    let hashing = sink.remembers();
     let feed = Feed {
         state: Mutex::new(FeedState {
             splitter: Splitter::new(plan.budget()),
@@ -207,10 +214,15 @@ fn run_in_parallel(
             early.insert(block.seq, block);
             while let Some(block) = early.remove(&turn) {
                 turn += 1;
-                if failure.is_none() && sink.ended.is_none() {
-                    failure = sink.take(&block).err();
+                let used = if failure.is_none() && sink.ended.is_none() {
+                    sink.take(block)
+                } else {
+                    Ok(block)
+                };
+                match used {
+                    Ok(block) => spare.lock().unwrap().push(block),
+                    Err(error) => failure = Some(error),
                 }
-                spare.lock().unwrap().push(block);
                 feed.done(failure.is_some() || sink.ended.is_some());
             }
         }
@@ -221,10 +233,161 @@ fn run_in_parallel(
     }
 }
 
+/// How a run keeps repeats out of its output.
+enum Dedup {
+    /// It does not: the job asked for none, or no line can repeat.
+    Off,
+    /// One set, looked up by the thread that writes.
+    Here(Seen, Finder),
+    /// One set per thread; a line belongs to the set its hash picks.
+    Shards(Shards),
+}
+
+/// Most lines the sets are sized for at the start (64 MB of table); past
+/// that they grow.
+const SIZED_FOR: u64 = 4 << 20;
+/// Most threads that look lines up at once.
+const MOST_SHARDS: usize = 8;
+/// Lines looked up together.
+const BATCH: usize = 32;
+
+/// Scratch space of one thread that looks lines up.
+#[derive(Default)]
+struct Finder {
+    mine: Vec<u32>,
+    slots: Vec<u64>,
+}
+
+impl Finder {
+    /// Looks up the lines of `block` whose hash picks set number `me` of
+    /// `sets`, adds the new ones to `seen` and lists the others in `repeats`.
+    fn find(
+        &mut self,
+        seen: &mut Seen,
+        block: &Block,
+        newline: usize,
+        (me, sets): (usize, usize),
+        repeats: &mut Vec<u32>,
+    ) {
+        self.mine.clear();
+        for (line, &hash) in block.hashes.iter().enumerate() {
+            if set_of(hash, sets) == me {
+                self.mine.push(line as u32);
+            }
+        }
+        self.slots.resize(BATCH, 0);
+        for batch in self.mine.chunks(BATCH) {
+            // A lookup misses the cache twice: at its slot, and at the line the
+            // slot points to. Both are read for the whole batch before any line is
+            // looked up, so the misses overlap instead of being waited out in turn.
+            for (slot, &line) in self.slots.iter_mut().zip(batch) {
+                *slot = seen.peek(block.hashes[line as usize]);
+            }
+            let glanced = self.slots.iter().zip(batch).fold(0, |all, (&slot, &line)| {
+                all ^ seen.glance(block.hashes[line as usize], slot)
+            });
+            std::hint::black_box(glanced);
+            for &line in batch {
+                let at = line as usize;
+                let start = if at == 0 {
+                    0
+                } else {
+                    block.ends[at - 1] as usize
+                };
+                let end = block.ends[at] as usize - newline;
+                if !seen.insert(block.hashes[at], &block.bytes[start..end]) {
+                    repeats.push(line);
+                }
+            }
+        }
+    }
+}
+
+/// The set a hash belongs to. Uses bits the sets themselves do not: they
+/// take their slot from the low bits and their tag from the top 24.
+fn set_of(hash: u64, sets: usize) -> usize {
+    (((hash >> 32) & 0xff) as usize * sets) >> 8
+}
+
+/// The threads that look lines up, each with its own set.
+///
+/// Every thread gets the whole block and a list to fill with the repeats it
+/// finds among its own lines. (Marking them in one shared array instead makes
+/// the threads fight over the same cache lines.)
+struct Shards {
+    work: Vec<mpsc::Sender<(Arc<Block>, Vec<u32>)>>,
+    done: mpsc::Receiver<Vec<u32>>,
+    memory: Arc<Vec<AtomicU64>>,
+    lists: Vec<Vec<u32>>,
+}
+
+impl Shards {
+    fn start(count: usize, room: u64, newline: usize) -> Shards {
+        let memory: Arc<Vec<AtomicU64>> = Arc::new((0..count).map(|_| AtomicU64::new(0)).collect());
+        let (finished, done) = mpsc::channel();
+        let work = (0..count)
+            .map(|me| {
+                let (send, blocks) = mpsc::channel::<(Arc<Block>, Vec<u32>)>();
+                let (finished, memory) = (finished.clone(), Arc::clone(&memory));
+                thread::spawn(move || {
+                    let mut seen = Seen::with_room(room / count as u64);
+                    let mut finder = Finder::default();
+                    memory[me].store(seen.memory(), Ordering::Relaxed);
+                    for (block, mut repeats) in blocks {
+                        repeats.clear();
+                        finder.find(&mut seen, &block, newline, (me, count), &mut repeats);
+                        memory[me].store(seen.memory(), Ordering::Relaxed);
+                        drop(block);
+                        if finished.send(repeats).is_err() {
+                            return;
+                        }
+                    }
+                });
+                send
+            })
+            .collect();
+        Shards {
+            work,
+            done,
+            memory,
+            lists: vec![Vec::new(); count],
+        }
+    }
+
+    /// Looks the block's lines up on all threads and marks the repeats.
+    fn find(&mut self, block: Block, repeats: &mut [bool]) -> Block {
+        let block = Arc::new(block);
+        for (work, list) in self.work.iter().zip(self.lists.drain(..)) {
+            work.send((Arc::clone(&block), list))
+                .expect("a dedup thread ended early");
+        }
+        for _ in &self.work {
+            let list = self.done.recv().expect("a dedup thread ended early");
+            for &line in &list {
+                repeats[line as usize] = true;
+            }
+            self.lists.push(list);
+        }
+        Arc::try_unwrap(block)
+            .ok()
+            .expect("a dedup thread kept its block")
+    }
+
+    fn memory(&self) -> u64 {
+        self.memory
+            .iter()
+            .map(|bytes| bytes.load(Ordering::Relaxed))
+            .sum()
+    }
+}
+
 /// Where the blocks end up: drops repeats, stops at the limit, writes the rest.
 struct Sink<W: Write> {
     out: W,
-    seen: Option<Seen>,
+    dedup: Dedup,
+    /// Per line of the block at hand: whether it repeats an earlier line.
+    repeats: Vec<bool>,
+    list: Vec<u32>,
     limit: Option<u64>,
     maxmem: Option<u64>,
     newline: usize,
@@ -236,61 +399,113 @@ struct Sink<W: Write> {
 }
 
 impl<W: Write> Sink<W> {
-    fn new(out: W, spec: &Spec, plan: &Plan, meter: Arc<Meter>) -> Sink<W> {
-        Sink {
+    /// `remember` turns deduplication on; with more than one thread the
+    /// lookups are spread over threads too.
+    fn new(
+        out: W,
+        spec: &Spec,
+        plan: &Plan,
+        meter: Arc<Meter>,
+        remember: bool,
+        threads: usize,
+    ) -> Sink<W> {
+        let limit = spec.limit.filter(|&limit| limit > 0);
+        let maxmem = spec.maxmem.filter(|&bytes| bytes > 0);
+        let dedup = if !remember {
+            Dedup::Off
+        } else {
+            // no more lines than the job has or the limit lets through, and a
+            // table well inside the memory cap
+            let room = plan
+                .lines(SIZED_FOR)
+                .min(limit.unwrap_or(u64::MAX))
+                .min(maxmem.map_or(u64::MAX, |bytes| bytes / 64));
+            if threads > 1 {
+                Dedup::Shards(Shards::start(threads.min(MOST_SHARDS), room, plan.newline))
+            } else {
+                Dedup::Here(Seen::with_room(room), Finder::default())
+            }
+        };
+        let sink = Sink {
             out,
-            seen: spec.dedup.then(Seen::new),
-            limit: spec.limit.filter(|&limit| limit > 0),
-            maxmem: spec.maxmem.filter(|&bytes| bytes > 0),
+            dedup,
+            repeats: Vec::new(),
+            list: Vec::new(),
+            limit,
+            maxmem,
             newline: plan.newline,
             written: 0,
             processed: 0,
             ended: None,
             meter,
-        }
+        };
+        sink.meter.memory.store(sink.memory(), Ordering::Relaxed);
+        sink
+    }
+
+    fn remembers(&self) -> bool {
+        !matches!(self.dedup, Dedup::Off)
     }
 
     fn memory(&self) -> u64 {
-        self.seen.as_ref().map_or(0, Seen::memory)
+        match &self.dedup {
+            Dedup::Off => 0,
+            Dedup::Here(seen, _) => seen.memory(),
+            Dedup::Shards(shards) => shards.memory(),
+        }
     }
 
-    /// Takes the next block of the output.
-    fn take(&mut self, block: &Block) -> io::Result<()> {
+    /// Takes the next block of the output, and gives it back to be used again.
+    fn take(&mut self, mut block: Block) -> io::Result<Block> {
         // lines that may still be written before the limit
         let room = self.limit.map_or(u64::MAX, |limit| limit - self.written);
         let mut looked_at = block.lines;
         let mut kept = block.lines;
-        match &mut self.seen {
-            None if block.lines >= room => {
+        if !self.remembers() {
+            if block.lines >= room {
                 self.out
                     .write_all(&block.bytes[..end_of_line(&block.bytes, room)])?;
                 looked_at = room;
                 kept = room;
                 self.ended = Some("limit");
+            } else {
+                self.out.write_all(&block.bytes)?;
             }
-            None => self.out.write_all(&block.bytes)?,
-            Some(seen) => {
-                kept = 0;
-                let mut start = 0; // of the line at hand
-                let mut pending = 0; // start of the kept lines not written yet
-                for (index, (&end, &hash)) in block.ends.iter().zip(&block.hashes).enumerate() {
-                    let end = end as usize;
-                    if seen.insert(hash, &block.bytes[start..end - self.newline]) {
-                        kept += 1;
-                        if kept == room {
-                            looked_at = index as u64 + 1;
-                            self.ended = Some("limit");
-                            start = end;
-                            break;
-                        }
-                    } else {
-                        self.out.write_all(&block.bytes[pending..start])?;
-                        pending = end;
+        } else {
+            self.repeats.clear();
+            self.repeats.resize(block.ends.len(), false);
+            block = match &mut self.dedup {
+                Dedup::Here(seen, finder) => {
+                    self.list.clear();
+                    finder.find(seen, &block, self.newline, (0, 1), &mut self.list);
+                    for &line in &self.list {
+                        self.repeats[line as usize] = true;
                     }
-                    start = end;
+                    block
                 }
-                self.out.write_all(&block.bytes[pending..start])?;
+                Dedup::Shards(shards) => shards.find(block, &mut self.repeats),
+                Dedup::Off => block,
+            };
+            kept = 0;
+            let mut start = 0; // of the line at hand
+            let mut pending = 0; // start of the kept lines not written yet
+            for (index, (&end, &repeat)) in block.ends.iter().zip(&self.repeats).enumerate() {
+                let end = end as usize;
+                if repeat {
+                    self.out.write_all(&block.bytes[pending..start])?;
+                    pending = end;
+                } else {
+                    kept += 1;
+                    if kept == room {
+                        looked_at = index as u64 + 1;
+                        self.ended = Some("limit");
+                        start = end;
+                        break;
+                    }
+                }
+                start = end;
             }
+            self.out.write_all(&block.bytes[pending..start])?;
         }
         self.written += kept;
         self.processed += looked_at;
@@ -303,7 +518,7 @@ impl<W: Write> Sink<W> {
             .store(self.processed, Ordering::Relaxed);
         self.meter.written.store(self.written, Ordering::Relaxed);
         self.meter.memory.store(memory, Ordering::Relaxed);
-        Ok(())
+        Ok(block)
     }
 }
 
@@ -417,7 +632,14 @@ mod tests {
     fn outcome(spec: &Spec) -> (String, u64, u64, Option<&'static str>) {
         let plan = Plan::new(spec).unwrap();
         let on = |threads| {
-            let mut sink = Sink::new(Vec::new(), spec, &plan, Arc::new(Meter::default()));
+            let mut sink = Sink::new(
+                Vec::new(),
+                spec,
+                &plan,
+                Arc::new(Meter::default()),
+                spec.dedup,
+                threads,
+            );
             assert!(run(&plan, &AtomicBool::new(false), &mut sink, threads).unwrap());
             (
                 String::from_utf8(sink.out).unwrap(),
@@ -485,10 +707,12 @@ mod tests {
     fn stop_ends_the_run_between_tasks() {
         let job = spec(&["a", "b"], 3);
         let plan = Plan::new(&job).unwrap();
-        let mut sink = Sink::new(Vec::new(), &job, &plan, Arc::new(Meter::default()));
-        assert!(!run(&plan, &AtomicBool::new(true), &mut sink, 1).unwrap());
-        assert!(!run(&plan, &AtomicBool::new(true), &mut sink, 3).unwrap());
-        assert_eq!(sink.written, 0);
+        for threads in [1, 3] {
+            let meter = Arc::new(Meter::default());
+            let mut sink = Sink::new(Vec::new(), &job, &plan, meter, true, threads);
+            assert!(!run(&plan, &AtomicBool::new(true), &mut sink, threads).unwrap());
+            assert_eq!(sink.written, 0);
+        }
     }
 
     #[test]

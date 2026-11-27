@@ -116,6 +116,22 @@ impl Plan {
         let lines = TASK_LINES.min(TASK_BYTES / widest.max(1)).max(1);
         (lines / self.shapes.len() as u64).max(1)
     }
+
+    /// How many lines the job looks at, counted no further than `cap`.
+    pub fn lines(&self, cap: u64) -> u64 {
+        let mut ways = Ways { levels: Vec::new() };
+        let mut total = 0u64;
+        for round in 1..=self.rounds {
+            let lines = ways
+                .get(self, round, 0)
+                .saturating_mul(self.shapes.len() as u64);
+            total = total.saturating_add(lines);
+            if total >= cap {
+                return cap;
+            }
+        }
+        total
+    }
 }
 
 /// How one variation of a line is put together from its pieces.
