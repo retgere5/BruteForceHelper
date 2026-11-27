@@ -104,7 +104,7 @@ def test_quiet_mode_prints_nothing_and_returns_summary(tmp_path, capsys):
     assert calls and calls[-1] == 39
 
 
-def test_progress_called_in_batches(tmp_path, monkeypatch):
+def test_progress_called_in_batches(tmp_path, monkeypatch, python_engine):
     monkeypatch.setattr(pg, "PROGRESS_UPDATE_BATCH", 10)
     calls = []
     pg.generate_and_save_combinations(["a", "b"], str(tmp_path / "o.txt"), 1, 5, quiet=True,
@@ -113,7 +113,7 @@ def test_progress_called_in_batches(tmp_path, monkeypatch):
     assert {total for _, total in calls} == {pg.calculate_total_combinations(["a", "b"], 1, 5, _mods())}
 
 
-def test_stop_event_ends_run_and_keeps_output(tmp_path):
+def test_stop_event_ends_run_and_keeps_output(tmp_path, python_engine):
     stop = threading.Event()
     out = tmp_path / "o.txt"
 

@@ -6,8 +6,11 @@
 
 #![forbid(unsafe_code)]
 
+mod dedup;
+mod run;
 mod spec;
 mod text;
+mod walk;
 
 use std::io::{self, BufWriter, Write};
 use std::process::ExitCode;
@@ -40,18 +43,20 @@ fn main() -> ExitCode {
         println!("{PROTOCOL}");
         return ExitCode::SUCCESS;
     }
-    let (message, code) = match run() {
+    let (kind, message, code) = match serve() {
         Ok(()) => return ExitCode::SUCCESS,
-        Err(Failure::Job(message)) => (message, 2),
-        Err(Failure::Io(error)) => (error.to_string(), 1),
+        Err(Failure::Job(message)) => ("job", message, 2),
+        Err(Failure::Io(error)) => ("io", error.to_string(), 1),
     };
-    let _ = writeln!(io::stderr(), "{message}");
+    let _ = writeln!(io::stderr(), "E {kind} {message}");
     ExitCode::from(code)
 }
 
-fn run() -> Result<(), Failure> {
+/// Reads the job on stdin and does it.
+fn serve() -> Result<(), Failure> {
     let spec = Spec::read(&mut io::stdin().lock())?;
     match spec.command.as_str() {
+        "generate" => run::generate(&spec),
         "variants" => variants(&spec),
         other => Err(Failure::Job(format!("unknown command: {other}"))),
     }

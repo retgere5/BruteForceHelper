@@ -256,7 +256,7 @@ def test_memory_warning(tmp_path, monkeypatch, capsys):
     assert "holding" in capsys.readouterr().out.lower()
 
 
-def test_max_memory_stops_early(tmp_path):
+def test_max_memory_stops_early(tmp_path, python_engine):
     words = [chr(ord('a') + i) for i in range(30)]  # unbounded: 30 + 900 + 27000 combos
     out = tmp_path / "o.txt"
     pg.generate_and_save_combinations(words, str(out), min_length=1, max_length=None, max_memory_mb=1)

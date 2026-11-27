@@ -5,6 +5,7 @@ import json
 import shutil
 import hashlib
 import sqlite3
+import subprocess
 from tqdm import tqdm
 from itertools import product
 from types import SimpleNamespace
@@ -640,6 +641,207 @@ def _native_job(words, min_length, max_length, word_start, word_end, flags, dedu
     return ('\n'.join(lines) + '\n').encode('ascii')
 
 
+def _native_threads():
+    """Threads the core should use: BFH_THREADS, or 0 for one per CPU core."""
+    try:
+        return max(0, int(os.environ.get('BFH_THREADS', '0')))
+    except ValueError:
+        return 0
+
+
+def _native_unsupported(words, min_length, max_length, word_start, word_end, limit, max_memory_mb,
+                        filters, resume, disk_dedup, stop_event, compressed):
+    """Why a run has to stay in Python, or None when the core can do it."""
+    if filters:
+        return 'cleaning rules run in Python'
+    if compressed:
+        return 'gzip output is written by Python'
+    if resume or disk_dedup:
+        return 'resume and disk dedup run in Python'
+    if stop_event is not None and stop_event.is_set():
+        return 'stopped before it began'
+    for value in (min_length, max_length, limit, max_memory_mb):
+        if value is not None and not (isinstance(value, int) and 0 <= value < 2 ** 40):
+            return 'a number the core does not take'
+    texts = [*words, word_start or '', word_end or '']
+    if not words or '' in words or not all(isinstance(text, str) for text in texts):
+        return 'no words, or an empty one'
+    for text in texts:
+        # capital sigma lowercases by its neighbours, text mode would rewrite a
+        # line break, and a lone surrogate has no UTF-8 form
+        if 'Σ' in text or '\n' in text:
+            return 'a character the core leaves to Python'
+        try:
+            text.encode('utf-8')
+        except UnicodeEncodeError:
+            return 'text that is not valid Unicode'
+    return None
+
+
+def _detached():
+    """Popen options that keep Ctrl+C away from the core: the run tells it to stop
+    instead, so it can finish the file first."""
+    if os.name == 'nt':
+        return {'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP
+                | getattr(subprocess, 'CREATE_NO_WINDOW', 0x08000000)}
+    return {'start_new_session': True}
+
+
+def _tell_stop(process):
+    """Asks the core to write the lines it has finished and end."""
+    try:
+        process.stdin.write(b'stop\n')
+        process.stdin.flush()
+    except (OSError, ValueError):
+        pass  # it has ended already
+
+
+def _progress_bar(total, initial, quiet):
+    return tqdm(total=total,
+                initial=initial,
+                desc=f'{Fore.CYAN}Processing{Style.RESET_ALL}',
+                unit=f' {Fore.GREEN}combinations{Style.RESET_ALL}',
+                dynamic_ncols=True,
+                position=0,
+                leave=True,
+                ncols=150,
+                bar_format='{desc}: {percentage:.2f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}] {percentage:.2f}%',
+                miniters=1,
+                mininterval=0.1,
+                smoothing=0.3,
+                disable=quiet)
+
+
+def _memory_warning(used_bytes):
+    return (f"{Fore.YELLOW}Warning: the dedup set is holding ~"
+            f"{used_bytes / (1024*1024):.0f} MB in memory.{Style.RESET_ALL}")
+
+
+def _memory_limit_notice(used_bytes):
+    return (f"{Fore.YELLOW}Memory limit reached (~"
+            f"{used_bytes / (1024*1024):.0f} MB); stopping generation.{Style.RESET_ALL}")
+
+
+def _say_report(say, written, elapsed, memory_bytes, filename, rules=None):
+    """The closing statistics of a run."""
+    say(f"\n{Fore.GREEN}Combinations saved successfully.{Style.RESET_ALL}")
+    say(f"{Fore.CYAN}Total combinations generated:{Style.RESET_ALL} {Fore.YELLOW}{written:,}{Style.RESET_ALL}")
+    if rules:
+        say(rules)
+    say(f"{Fore.CYAN}Processing time:{Style.RESET_ALL} {Fore.YELLOW}{elapsed:.2f}{Style.RESET_ALL} seconds")
+    say(f"{Fore.CYAN}Memory usage:{Style.RESET_ALL} {Fore.YELLOW}{memory_bytes / (1024*1024):.2f}{Style.RESET_ALL} MB")
+    say(f"{Fore.CYAN}File location:{Style.RESET_ALL} {Fore.YELLOW}{os.path.abspath(filename)}{Style.RESET_ALL}")
+
+
+def _generate_native(core, words, filename, min_length, max_length, modifiers, word_start, word_end,
+                     use_gzip, limit, max_memory_mb, dedup, total, say, quiet, progress, live, stop_event):
+    """The run, done by the Rust core. Returns the summary the Python loop would
+    return, or None when the core let the run down and Python has to do it."""
+    job = _native_job(words, min_length, max_length, word_start, word_end, compile_modifiers(modifiers),
+                      dedup, limit, max_memory_mb * 1024 * 1024 if max_memory_mb else None,
+                      use_gzip or filename.endswith('.gz'), _native_threads())
+    start_time = time.time()
+    summary = failure = None
+    shown = memory = 0
+    memory_warned = stopping = False
+    # Python opens the file itself, so a bad path fails the way it always did
+    with open(filename, 'wb') as output:
+        try:
+            process = subprocess.Popen([core], stdin=subprocess.PIPE, stdout=output, stderr=subprocess.PIPE,
+                                       **_detached())
+        except OSError:
+            return None
+        progress_bar = _progress_bar(total, 0, quiet)
+        try:
+            try:
+                process.stdin.write(job)
+                process.stdin.flush()
+            except OSError:
+                pass  # the core ended early and says why on stderr
+            for raw in process.stderr:
+                kind, _, rest = raw.decode('utf-8', 'replace').strip().partition(' ')
+                if kind == 'R':
+                    summary = json.loads(rest)
+                elif kind == 'E':
+                    failure = rest
+                elif kind == 'P':
+                    processed, written, memory = map(int, rest.split())
+                    progress_bar.update(written - shown)
+                    shown = written
+                    if dedup:
+                        progress_bar.set_postfix_str(f"mem ~{memory / (1024*1024):.0f}MB")
+                        if not memory_warned and memory >= MEMORY_WARNING_BYTES:
+                            memory_warned = True
+                            progress_bar.clear()
+                            say(_memory_warning(memory))
+                    if live is not None:
+                        live['processed'] = processed
+                        live['filtered_total'] = 0
+                    if progress is not None:
+                        progress(written, total)
+                    if not stopping and stop_event is not None and stop_event.is_set():
+                        stopping = True
+                        _tell_stop(process)
+        except BaseException:
+            # Ctrl+C, or an error in the caller's callback: the core writes out the
+            # lines it finished, then the error goes on as it would from the Python loop
+            _tell_stop(process)
+            try:
+                process.stderr.read()
+            except BaseException:
+                process.kill()
+            process.wait()
+            progress_bar.close()
+            raise
+        finally:
+            for pipe in (process.stdin, process.stderr):
+                try:
+                    pipe.close()
+                except OSError:
+                    pass
+        code = process.wait()
+
+    if summary is None or code != 0:
+        progress_bar.close()
+        if failure and failure.startswith('io '):
+            raise OSError(failure[3:])
+        say(f"{Fore.YELLOW}The Rust core could not do this run ({failure or 'exit code %d' % code}); "
+            f"continuing in Python.{Style.RESET_ALL}")
+        return None
+
+    written, processed, memory = summary['written'], summary['processed'], summary['memory']
+    stopped_by = summary['stopped_by']
+    if stopped_by is None and stop_event is not None and stop_event.is_set():
+        stopped_by = 'user'
+    if dedup and not memory_warned and memory >= MEMORY_WARNING_BYTES:
+        progress_bar.clear()
+        say(_memory_warning(memory))
+    if stopped_by == 'memory':
+        progress_bar.clear()
+        say(_memory_limit_notice(memory))
+    if live is not None:
+        live['processed'] = processed
+        live['filtered_total'] = 0
+    if progress is not None:
+        progress(written, total)
+    progress_bar.update(written - shown)
+    if progress_bar.n < total:
+        progress_bar.update(total - progress_bar.n)
+    progress_bar.close()
+    elapsed_time = time.time() - start_time
+    _say_report(say, written, elapsed_time, memory, filename)
+    return {
+        'written': written,
+        'elapsed': elapsed_time,
+        'path': os.path.abspath(filename),
+        'stopped_by': stopped_by,
+        'filtered': {},
+        'filtered_total': 0,
+        'skipped': 0,
+        'engine': 'native',
+    }
+
+
 def generate_and_save_combinations(lst, filename, min_length=1, max_length=None, uppercase=False, capitalize=False,
                                  reverse=False, reverse_capitalize=False, reverse_upper=False, leet=False,
                                  word_start=None, word_end=None, use_gzip=False, limit=None, max_memory_mb=None,
@@ -703,6 +905,17 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
             say(f"{Fore.YELLOW}Warning: low free disk space "
                 f"({free / (1024 * 1024):.0f} MB) on the output location.{Style.RESET_ALL}")
 
+        # The Rust core does the whole run when it is built and takes these options
+        core = _native_binary()
+        if core and not _native_unsupported(lst, min_length, max_length, word_start, word_end, limit,
+                                            max_memory_mb, filters, resume, disk_dedup, stop_event,
+                                            use_gzip or filename.endswith('.gz')):
+            result = _generate_native(core, lst, filename, min_length, max_length, modifiers, word_start,
+                                      word_end, use_gzip, limit, max_memory_mb, dedup, total_combinations,
+                                      say, quiet, progress, live, stop_event)
+            if result is not None:
+                return result
+
         # Resume support: restore state from a matching checkpoint
         checkpoint_file = filename + '.pgckpt'
         signature = generation_signature(lst, min_length, max_length, modifiers, word_start, word_end, use_gzip,
@@ -742,19 +955,7 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
             disk_cur = disk_conn.cursor()
 
         with open_output(filename, use_gzip, append=resuming) as file:
-            progress_bar = tqdm(total=total_combinations,
-                              initial=written,
-                              desc=f'{Fore.CYAN}Processing{Style.RESET_ALL}',
-                              unit=f' {Fore.GREEN}combinations{Style.RESET_ALL}',
-                              dynamic_ncols=True,
-                              position=0,
-                              leave=True,
-                              ncols=150,
-                              bar_format='{desc}: {percentage:.2f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}] {percentage:.2f}%',
-                              miniters=1,
-                              mininterval=0.1,
-                              smoothing=0.3,
-                              disable=quiet)
+            progress_bar = _progress_bar(total_combinations, written, quiet)
 
             start_time = time.time()
             memory_warned = False
@@ -865,14 +1066,12 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
                                 if not memory_warned and used_bytes >= MEMORY_WARNING_BYTES:
                                     memory_warned = True
                                     progress_bar.clear()
-                                    say(f"{Fore.YELLOW}Warning: the dedup set is holding ~"
-                                        f"{used_bytes / (1024*1024):.0f} MB in memory.{Style.RESET_ALL}")
+                                    say(_memory_warning(used_bytes))
                                 if max_memory_bytes and used_bytes >= max_memory_bytes:
                                     stop = True
                                     stopped_by = 'memory'
                                     progress_bar.clear()
-                                    say(f"{Fore.YELLOW}Memory limit reached (~"
-                                        f"{used_bytes / (1024*1024):.0f} MB); stopping generation.{Style.RESET_ALL}")
+                                    say(_memory_limit_notice(used_bytes))
                                     break
 
                     base_index += 1
@@ -920,20 +1119,18 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
                 os.remove(checkpoint_file)
 
             # Print statistics
-            say(f"\n{Fore.GREEN}Combinations saved successfully.{Style.RESET_ALL}")
-            say(f"{Fore.CYAN}Total combinations generated:{Style.RESET_ALL} {Fore.YELLOW}{written:,}{Style.RESET_ALL}")
             filtered = {name: n for name, n in rule[1].stats.items() if n} if rule else {}
             for name, n in (pruner.by_rule.items() if pruner is not None else ()):
                 filtered[name] = filtered.get(name, 0) + n
             removed_total = removed + skipped()
+            rules_report = None
             if rule:
                 never_built = (f" ({skipped():,} of them were never generated)" if skipped() else '')
-                say(f"{Fore.CYAN}Removed by rules:{Style.RESET_ALL} {Fore.YELLOW}{removed_total:,}{Style.RESET_ALL}"
+                rules_report = (
+                    f"{Fore.CYAN}Removed by rules:{Style.RESET_ALL} {Fore.YELLOW}{removed_total:,}{Style.RESET_ALL}"
                     + never_built
                     + ''.join(f"\n  {name}: {n:,}" for name, n in sorted(filtered.items(), key=lambda kv: -kv[1])))
-            say(f"{Fore.CYAN}Processing time:{Style.RESET_ALL} {Fore.YELLOW}{elapsed_time:.2f}{Style.RESET_ALL} seconds")
-            say(f"{Fore.CYAN}Memory usage:{Style.RESET_ALL} {Fore.YELLOW}{(sys.getsizeof(seen) + seen_bytes) / (1024*1024):.2f}{Style.RESET_ALL} MB")
-            say(f"{Fore.CYAN}File location:{Style.RESET_ALL} {Fore.YELLOW}{os.path.abspath(filename)}{Style.RESET_ALL}")
+            _say_report(say, written, elapsed_time, sys.getsizeof(seen) + seen_bytes, filename, rules_report)
 
             return {
                 'written': written,
@@ -943,6 +1140,7 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
                 'filtered': filtered,
                 'filtered_total': removed_total,
                 'skipped': skipped(),
+                'engine': 'python',
             }
 
     except PermissionError:
