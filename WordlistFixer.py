@@ -28,6 +28,9 @@ from modules.ui_manager import UIManager
 from modules.settings_manager import Settings, FilterRecommender
 from modules.language_manager import LanguageManager
 
+# analyze_wordlist() ilerleme/durdurma kontrolünü bu kadar satırda bir yapar
+ANALYZE_CHECK_INTERVAL = 100_000
+
 def check_keyboard_input():
     """Basılan tuşu (küçük harf) döndürür, yoksa None. Windows dışında etkisizdir."""
     if msvcrt is None:
@@ -43,11 +46,21 @@ def open_text(path, mode):
     """Metin dosyasını açar; uzantı .gz ise şeffaf biçimde gzip kullanır.
 
     mode: 'r' / 'w' / 'a' (metin kipi). gzip için otomatik olarak 't' eklenir.
+    Geçersiz UTF-8 baytları (ör. rockyou.txt'deki latin-1 satırlar) hata vermez:
+    surrogateescape ile okunur ve yazılırken aynen geri döner.
     """
     path = str(path)
     if path.endswith('.gz'):
-        return gzip.open(path, mode + 't', encoding='utf-8')
-    return open(path, mode, encoding='utf-8')
+        return gzip.open(path, mode + 't', encoding='utf-8', errors='surrogateescape')
+    return open(path, mode, encoding='utf-8', errors='surrogateescape')
+
+def _noop(*_args, **_kwargs):
+    return None
+
+class _QuietUI:
+    """UIManager yerine geçen sessiz nesne: tüm print_* çağrılarını yok sayar."""
+    def __getattr__(self, name):
+        return _noop
 
 def _filter_chunk_worker(args):
     """Tek bir parçayı (chunk) filtreler. Çoklu-işlem havuzunda çalışacak şekilde
@@ -79,13 +92,25 @@ class WordlistOptimizer:
         # dict'i bir namespace'e normalize ediyoruz.
         self.options = options if isinstance(options, SimpleNamespace) else SimpleNamespace(**options)
     
-    def optimize(self):
-        """Wordlist'i optimize eder."""
+    def optimize(self, quiet=False, progress=None, stop_event=None):
+        """Wordlist'i optimize eder.
+
+        Programatik kullanım (ör. web arayüzü) için: quiet konsola bir şey yazmaz,
+        tuş kontrolü ve checkpoint kullanmaz, hataları yutmak yerine yükseltir;
+        progress(işlenen, toplam, silinen, filtre_sayaçları) her parçadan sonra
+        çağrılır; stop_event (is_set() olan herhangi bir nesne) ayarlanınca o ana
+        kadar yazılanla erken biter.
+
+        Döner: özet sözlüğü; q/c/Ctrl+C ile durdurulduğunda ya da hata
+        yakalandığında None.
+        """
+        ui = _QuietUI() if quiet else self.ui
         try:
-            # Checkpoint dosyası adı
+            # Checkpoint dosyası adı (quiet kipte checkpoint yok: her çalıştırma sıfırdan)
             checkpoint_file = f"{self.options.output}.checkpoint"
-            checkpoint = CheckpointManager(checkpoint_file)
-            
+            checkpoint = None if quiet else CheckpointManager(checkpoint_file)
+            start_position = checkpoint.last_position if checkpoint else 0
+
             # Toplam satır sayısı
             with open_text(self.options.input, 'r') as _f:
                 total_lines = sum(1 for _ in _f)
@@ -97,34 +122,37 @@ class WordlistOptimizer:
             # Parça sayısından fazla işçi açma; tek parça/az veride ana süreçte çalış
             worker_count = max(1, min(cpu_count, num_chunks))
 
-            total_passwords = checkpoint.processed_count
-            removed_passwords = checkpoint.removed_count
+            total_passwords = checkpoint.processed_count if checkpoint else 0
+            removed_passwords = checkpoint.removed_count if checkpoint else 0
+            stopped = False
 
-            self.ui.print_header(self.language_manager.get_text("wordlist_optimization"))
-            if checkpoint.last_position > 0:
-                self.ui.print_info(f"{self.language_manager.get_text('checkpoint_found')} {checkpoint.last_position:,} {self.language_manager.get_text('passwords_processed')}")
-            self.ui.print_info(f"{self.language_manager.get_text('chunk_size')} {chunk_size:,} {self.language_manager.get_text('passwords')}")
-            if msvcrt is not None:
-                self.ui.print_info(f"{self.language_manager.get_text('press_q_to_stop')} {self.language_manager.get_text('press_c_to_checkpoint')}")
+            ui.print_header(self.language_manager.get_text("wordlist_optimization"))
+            if start_position > 0:
+                ui.print_info(f"{self.language_manager.get_text('checkpoint_found')} {start_position:,} {self.language_manager.get_text('passwords_processed')}")
+            ui.print_info(f"{self.language_manager.get_text('chunk_size')} {chunk_size:,} {self.language_manager.get_text('passwords')}")
+            if msvcrt is not None and not quiet:
+                ui.print_info(f"{self.language_manager.get_text('press_q_to_stop')} {self.language_manager.get_text('press_c_to_checkpoint')}")
 
             # İstatistik yöneticisi (görüntüleme dile göre çevrilir)
             filter_stats = FilterStats(self.language_manager)
+            if progress is not None:
+                progress(total_passwords, total_lines, removed_passwords, dict(filter_stats.stats))
 
             # worker_count > 1 ise gerçek çoklu-işlem (imap sırayı korur, çıktı
             # girdi sırasıyla aynı kalır); aksi halde ana süreçte (map) çalış.
             pool = mp.Pool(processes=worker_count) if worker_count > 1 else None
             try:
                 with open_text(self.options.input, 'r') as infile, \
-                     open_text(self.options.output, 'a' if checkpoint.last_position > 0 else 'w') as outfile:
+                     open_text(self.options.output, 'a' if start_position > 0 else 'w') as outfile:
 
                     # Checkpoint konumuna git
-                    if checkpoint.last_position > 0:
-                        for _ in range(checkpoint.last_position):
+                    if start_position > 0:
+                        for _ in range(start_position):
                             next(infile)
 
                     progress_bar = tqdm(total=total_lines,
-                                      initial=checkpoint.last_position,
-                                      desc=f"{self.language_manager.get_text('total')} {checkpoint.last_position:,}",
+                                      initial=start_position,
+                                      desc=f"{self.language_manager.get_text('total')} {start_position:,}",
                                       unit=self.language_manager.get_text('password'),
                                       dynamic_ncols=True,
                                       position=0,
@@ -133,7 +161,8 @@ class WordlistOptimizer:
                                       bar_format='{desc}: {percentage:.2f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}] {percentage:.2f}%',
                                       miniters=1,
                                       mininterval=0.1,
-                                      smoothing=0.3)
+                                      smoothing=0.3,
+                                      disable=quiet)
 
                     def _chunk_args():
                         while True:
@@ -150,20 +179,20 @@ class WordlistOptimizer:
                     try:
                         for valid_passwords, stat_counts, chunk_len in results:
                             # Klavye kontrolü (q: durdur, c: checkpoint alıp durdur)
-                            key = check_keyboard_input()
+                            key = None if quiet else check_keyboard_input()
                             if key == 'q':
                                 progress_bar.clear()
-                                self.ui.print_warning(f"\n{self.language_manager.get_text('stopping')}")
+                                ui.print_warning(f"\n{self.language_manager.get_text('stopping')}")
                                 return
                             elif key == 'c':
                                 progress_bar.clear()
-                                self.ui.print_warning(f"\n{self.language_manager.get_text('taking_checkpoint')}")
+                                ui.print_warning(f"\n{self.language_manager.get_text('taking_checkpoint')}")
                                 checkpoint.save_checkpoint(
                                     progress_bar.n,
                                     total_passwords,
                                     removed_passwords
                                 )
-                                self.ui.print_success(f"{self.language_manager.get_text('checkpoint_saved')} {checkpoint_file}")
+                                ui.print_success(f"{self.language_manager.get_text('checkpoint_saved')} {checkpoint_file}")
                                 return
 
                             # Alt süreçten dönen filtre sayaçlarını ana süreçte birleştir
@@ -179,29 +208,38 @@ class WordlistOptimizer:
                             total_passwords += chunk_len
                             removed_passwords += chunk_len - len(valid_passwords)
 
-                            if filter_stats.should_display():
+                            if not quiet and filter_stats.should_display():
                                 filter_stats.display(total_passwords, progress_bar)
 
                             progress_bar.update(chunk_len)
 
+                            if progress is not None:
+                                progress(total_passwords, total_lines, removed_passwords, dict(filter_stats.stats))
+                            if stop_event is not None and stop_event.is_set():
+                                stopped = True
+                                break
+
                     except KeyboardInterrupt:
+                        if quiet:
+                            raise
                         progress_bar.clear()
-                        self.ui.print_warning(f"\n{self.language_manager.get_text('paused_last_stats')}")
+                        ui.print_warning(f"\n{self.language_manager.get_text('paused_last_stats')}")
                         filter_stats.display(total_passwords)
-                        self.ui.print_warning(f"\n{self.language_manager.get_text('saving_checkpoint')}")
+                        ui.print_warning(f"\n{self.language_manager.get_text('saving_checkpoint')}")
                         checkpoint.save_checkpoint(
                             progress_bar.n,
                             total_passwords,
                             removed_passwords
                         )
-                        self.ui.print_success(f"{self.language_manager.get_text('checkpoint_saved')} {checkpoint_file}")
+                        ui.print_success(f"{self.language_manager.get_text('checkpoint_saved')} {checkpoint_file}")
                         return
 
                     progress_bar.close()
 
                     # Final istatistiklerini göster
-                    self.ui.print_header(self.language_manager.get_text('final_filter_stats'))
-                    filter_stats.display(total_passwords)
+                    if not quiet:
+                        ui.print_header(self.language_manager.get_text('final_filter_stats'))
+                        filter_stats.display(total_passwords)
 
             finally:
                 if pool is not None:
@@ -209,27 +247,44 @@ class WordlistOptimizer:
                     pool.join()
 
             # İşlem tamamlandığında checkpoint'i sil
-            if os.path.exists(checkpoint_file):
+            if checkpoint is not None and os.path.exists(checkpoint_file):
                 os.remove(checkpoint_file)
 
             reduction_rate = (removed_passwords / total_passwords * 100) if total_passwords else 0
-            self.ui.print_success(f"\n{self.language_manager.get_text('optimization_complete')}")
-            self.ui.print_info(f"{self.language_manager.get_text('total_passwords')} {total_passwords:,}")
-            self.ui.print_info(f"{self.language_manager.get_text('removed_passwords')} {removed_passwords:,}")
-            self.ui.print_info(f"{self.language_manager.get_text('remaining_passwords')} {total_passwords - removed_passwords:,}")
-            self.ui.print_info(f"{self.language_manager.get_text('reduction_rate')} %{reduction_rate:.2f}")
-            
+            ui.print_success(f"\n{self.language_manager.get_text('optimization_complete')}")
+            ui.print_info(f"{self.language_manager.get_text('total_passwords')} {total_passwords:,}")
+            ui.print_info(f"{self.language_manager.get_text('removed_passwords')} {removed_passwords:,}")
+            ui.print_info(f"{self.language_manager.get_text('remaining_passwords')} {total_passwords - removed_passwords:,}")
+            ui.print_info(f"{self.language_manager.get_text('reduction_rate')} %{reduction_rate:.2f}")
+
+            stats_file = None
             if self.options.keep_stats:
-                self.save_stats(self.options.output, total_passwords, removed_passwords, self.options, filter_stats)
-        
+                stats_file = self.save_stats(self.options.output, total_passwords, removed_passwords,
+                                             self.options, filter_stats, quiet=quiet)
+
+            return {
+                'total': total_passwords,
+                'removed': removed_passwords,
+                'remaining': total_passwords - removed_passwords,
+                'reduction_rate': reduction_rate,
+                'filter_stats': dict(filter_stats.stats),
+                'output': os.path.abspath(self.options.output),
+                'stats_file': stats_file,
+                'stopped': stopped,
+            }
+
         except FileNotFoundError:
-            self.ui.print_error(f"{self.language_manager.get_text('error')} '{self.options.input}' {self.language_manager.get_text('file_not_found')}")
+            if quiet:
+                raise
+            ui.print_error(f"{self.language_manager.get_text('error')} '{self.options.input}' {self.language_manager.get_text('file_not_found')}")
         except Exception as e:
-            self.ui.print_error(f"{self.language_manager.get_text('unexpected_error')} {e}")
+            if quiet:
+                raise
+            ui.print_error(f"{self.language_manager.get_text('unexpected_error')} {e}")
             traceback.print_exc()
 
-    def save_stats(self, output_file, total_passwords, removed_passwords, options, filter_stats):
-        """İstatistikleri dosyaya kaydeder."""
+    def save_stats(self, output_file, total_passwords, removed_passwords, options, filter_stats, quiet=False):
+        """İstatistikleri dosyaya kaydeder ve dosyanın yolunu döndürür."""
         stats_file = f"{os.path.splitext(output_file)[0]}_stats.txt"
         with open(stats_file, 'w', encoding='utf-8') as f:
             reduction_rate = (removed_passwords / total_passwords * 100) if total_passwords else 0
@@ -250,8 +305,10 @@ class WordlistOptimizer:
                 if count > 0:
                     percentage = (count / total_passwords) * 100 if total_passwords else 0
                     f.write(f"  - {filter_name}: {count:,} şifre (%{percentage:.2f})\n")
-        
-        self.ui.print_success(f"{self.language_manager.get_text('stats_saved')} {stats_file}")
+
+        if not quiet:
+            self.ui.print_success(f"{self.language_manager.get_text('stats_saved')} {stats_file}")
+        return stats_file
 
 class CheckpointManager:
     def __init__(self, checkpoint_file):
@@ -314,12 +371,18 @@ def options_from_config(path):
         raise ValueError("config must set 'input' (the wordlist file)")
     return options
 
-def analyze_wordlist(path):
-    """Bir wordlist'i okuyup özet istatistik döndürür (gzip destekli)."""
+def analyze_wordlist(path, progress=None, stop_event=None):
+    """Bir wordlist'i okuyup özet istatistik döndürür (gzip destekli).
+
+    progress(okunan_satır, toplam_karakter) ve stop_event her ANALYZE_CHECK_INTERVAL
+    satırda bir kontrol edilir; durdurulursa o ana kadarki istatistik döner.
+    """
     total = 0
     total_length = 0
     length_counts = {}
     digit_only = alpha_only = has_upper = has_lower = has_digit = has_special = 0
+    check = progress is not None or stop_event is not None
+    stopped = False
 
     with open_text(path, 'r') as f:
         for line in f:
@@ -342,6 +405,12 @@ def analyze_wordlist(path):
                 has_digit += 1
             if any(not c.isalnum() for c in password):
                 has_special += 1
+            if check and total % ANALYZE_CHECK_INTERVAL == 0:
+                if stop_event is not None and stop_event.is_set():
+                    stopped = True
+                    break
+                if progress is not None:
+                    progress(total, total_length)
 
     return {
         'total': total,
@@ -355,6 +424,7 @@ def analyze_wordlist(path):
         'has_lower': has_lower,
         'has_digit': has_digit,
         'has_special': has_special,
+        'stopped': stopped,
     }
 
 def display_analysis(stats, ui, language_manager):
@@ -388,7 +458,18 @@ def main():
                         help='Message language for --config/--analyze (default: tr)')
     parser.add_argument('--analyze', metavar='WORDLIST',
                         help='Analyze a wordlist and print statistics, then exit')
+    parser.add_argument('--webui', action='store_true',
+                        help='Open the web interface in your browser (local only)')
+    parser.add_argument('--port', type=int,
+                        help='Port for --webui (default: 8765)')
+    parser.add_argument('--no-browser', action='store_true', dest='no_browser',
+                        help='With --webui, only print the link instead of opening a browser')
     args = parser.parse_args()
+
+    if args.webui:
+        from webui.server import run
+        run(port=args.port, open_browser=not args.no_browser, start_tab='clean')
+        return
 
     ui_manager = UIManager()
     language_manager = LanguageManager()
