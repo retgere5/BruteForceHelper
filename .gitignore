@@ -43,6 +43,9 @@ checkpoint/
 output/
 wordlists/
 
+# Rust core build output
+native/target/
+
 # OS specific
 .DS_Store
 Thumbs.db 

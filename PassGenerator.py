@@ -579,6 +579,67 @@ def write_unique(file, word, seen):
         return True
     return False
 
+# --- Rust core ---------------------------------------------------------------------
+# native/ builds bfh-core, a program that runs the generation loop on every CPU core
+# and writes the same bytes. It is used whenever it is there: BFH_NATIVE=0 keeps a
+# run in Python, BFH_CORE points at another build.
+
+NATIVE_PROTOCOL = 'BFH1'
+
+
+def _native_binary():
+    """Path of the built Rust core, or None when it is missing or switched off."""
+    if os.environ.get('BFH_NATIVE') == '0':
+        return None
+    path = os.environ.get('BFH_CORE')
+    if not path:
+        name = 'bfh-core.exe' if os.name == 'nt' else 'bfh-core'
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'native', 'target', 'release', name)
+    return path if os.path.isfile(path) else None
+
+
+def _char_table(texts, turkish):
+    """The job's `char` lines: Python's upper, lower and title form of every
+    non-ASCII character in the input. The core takes its case rules from this
+    table alone, so both sides agree whatever Unicode version each one knows."""
+    chars = {char for text in texts for char in text if ord(char) > 127}
+    if turkish:
+        chars.update('İı')
+    return ['char ' + ' '.join(form.encode('utf-8').hex()
+                               for form in (char, char.upper(), char.lower(), char.capitalize()))
+            for char in sorted(chars)]
+
+
+def _native_job(words, min_length, max_length, word_start, word_end, flags, dedup, limit,
+                max_memory_bytes, use_gzip, threads=0):
+    """The job bfh-core reads from stdin: one `key value...` line per option, text
+    as hex-encoded UTF-8 and `-` for an option that is not set."""
+    def enc(text):
+        return text.encode('utf-8').hex()
+
+    def number(value):
+        return str(value) if value else '-'
+
+    lines = [
+        f'{NATIVE_PROTOCOL} generate',
+        'words ' + ' '.join(map(enc, words)),
+        f'min {min_length or 0}',
+        'max ' + number(max_length),
+        'start ' + (enc(word_start) if word_start else '-'),
+        'end ' + (enc(word_end) if word_end else '-'),
+        'mods ' + ''.join('01'[bool(flag)] for flag in flags),
+        'dedup ' + ('memory' if dedup else 'none'),
+        'limit ' + number(limit),
+        'maxmem ' + number(max_memory_bytes),
+        f'gzip {int(bool(use_gzip))}',
+        'newline ' + enc(os.linesep),
+        f'threads {threads}',
+        *_char_table([*words, word_start or '', word_end or ''], flags[6]),
+        'go',
+    ]
+    return ('\n'.join(lines) + '\n').encode('ascii')
+
+
 def generate_and_save_combinations(lst, filename, min_length=1, max_length=None, uppercase=False, capitalize=False,
                                  reverse=False, reverse_capitalize=False, reverse_upper=False, leet=False,
                                  word_start=None, word_end=None, use_gzip=False, limit=None, max_memory_mb=None,
