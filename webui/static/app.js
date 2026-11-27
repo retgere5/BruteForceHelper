@@ -1317,8 +1317,24 @@
     const cmd = $('.dock-cmd', el);
     const status = $('.dock-status', el);
     const reason = $('.dock-reason', el);
-    const fill = $('.dock-fill', el);
     const run = $('.run', el);
+    // While a job runs, a real progress bar with its percentage sits before the Stop button
+    const meter = document.createElement('div');
+    meter.className = 'dock-meter';
+    meter.hidden = true;
+    meter.setAttribute('role', 'progressbar');
+    meter.setAttribute('aria-valuemin', '0');
+    meter.setAttribute('aria-valuemax', '100');
+    meter.innerHTML = '<span class="dock-track"><span class="dock-bar"></span></span><span class="dock-pct"></span>';
+    el.insertBefore(meter, run);
+    const bar = $('.dock-bar', meter);
+    const percent = $('.dock-pct', meter);
+    const show = (fraction) => {
+      const value = Math.max(0, Math.min(1, fraction));
+      bar.style.transform = `scaleX(${value})`;
+      percent.textContent = pct(value, 1);
+      meter.setAttribute('aria-valuenow', String(Math.round(value * 100)));
+    };
     run.textContent = t(runKey);
     return {
       run,
@@ -1333,6 +1349,7 @@
         el.classList.toggle('is-running', running);
         cmd.hidden = running;
         status.hidden = !running;
+        meter.hidden = !running;
         reason.hidden = running;
         run.classList.toggle('is-stop', running);
         run.textContent = t(running ? (stopping ? 'dock.stopping' : 'dock.stop') : runKey);
@@ -1342,12 +1359,12 @@
       setProgress(fraction) {
         if (fraction === null || fraction === undefined) {
           el.classList.add('is-indeterminate');
-          fill.style.transform = '';
+          percent.textContent = '…';
+          meter.removeAttribute('aria-valuenow');
           return;
         }
         el.classList.remove('is-indeterminate');
-        fill.style.opacity = '';
-        fill.style.transform = `scaleX(${Math.max(0, Math.min(1, fraction))})`;
+        show(fraction);
       },
       setStatus(main, parts) {
         const strong = document.createElement('strong');
@@ -1359,21 +1376,8 @@
         });
         status.replaceChildren(strong, ...extra);
       },
-      complete() {
-        fill.style.transform = 'scaleX(1)';
-        setTimeout(() => {
-          if (el.classList.contains('is-running')) return;
-          fill.style.opacity = '0';
-          setTimeout(() => {
-            if (el.classList.contains('is-running')) return;
-            fill.style.transform = 'scaleX(0)';
-            fill.style.opacity = '';
-          }, 650);
-        }, 900);
-      },
-      reset() {
-        fill.style.transform = 'scaleX(0)';
-      },
+      complete() { show(1); },
+      reset() { show(0); },
     };
   }
 
@@ -1965,7 +1969,8 @@
       ]);
       titleProgress(fraction);
       wheel.spin(true);
-      wheel.hub(fmtCompact(done), t('gen.linesWritten'));
+      if (total) wheel.hub(pct(fraction, 1), `${fmtCompact(done)} ${t('gen.linesWritten')}`);
+      else wheel.hub(fmtCompact(done), t('gen.linesWritten'));
     }
 
     function done(job) {
