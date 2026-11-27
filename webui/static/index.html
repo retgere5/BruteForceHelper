@@ -1,0 +1,416 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<meta name="bfh-token" content="{{TOKEN}}">
+<title>BruteForce Helper</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="preload" href="/static/fonts/archivo-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/app.js" defer></script>
+</head>
+<body>
+<svg class="sprite" aria-hidden="true" focusable="false">
+  <defs>
+    <symbol id="i-mark" viewBox="0 0 32 32">
+      <circle cx="16" cy="16" r="13.5" fill="#fff" stroke="#1c1f2a" stroke-width="2"/>
+      <circle cx="16" cy="16" r="9" fill="none" stroke="#2340b8" stroke-width="2"/>
+      <circle cx="16" cy="16" r="4" fill="#d13a1f"/>
+      <rect x="13.2" y="1.5" width="5.6" height="11" rx="2.2" fill="none" stroke="#1c1f2a" stroke-width="1.6"/>
+    </symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3.5H7.5a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2V8z"/><path d="M14 3.5V8h4.5M9 12.5h6M9 16h4"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4.5v10M7.5 10.5l4.5 4.5 4.5-4.5M5.5 19.5h13"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M4 7.5a1.5 1.5 0 0 1 1.5-1.5h3.8l2 2.2h7.2A1.5 1.5 0 0 1 20 9.7v7.8a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5z"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="10.5" height="10.5" rx="2"/><path d="M15 9V6.5A1.5 1.5 0 0 0 13.5 5h-7A1.5 1.5 0 0 0 5 6.5v7A1.5 1.5 0 0 0 6.5 15H9"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="M9.5 6.5l5.5 5.5-5.5 5.5"/></symbol>
+    <symbol id="i-minus" viewBox="0 0 24 24"><path d="M6.5 12h11"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M6.5 12h11M12 6.5v11"/></symbol>
+    <symbol id="i-tray" viewBox="0 0 24 24"><path d="M12 3.5v9M8.5 9.5 12 13l3.5-3.5"/><path d="M4 14.5h4l1.5 2.5h5l1.5-2.5h4v3.5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/></symbol>
+  </defs>
+</svg>
+
+<header class="topbar">
+  <a class="brand" href="#generate">
+    <svg class="brand-mark" aria-hidden="true"><use href="#i-mark"/></svg>
+    <span class="brand-name">BruteForce Helper</span>
+  </a>
+  <nav class="switcher" role="tablist" aria-label="Tools" data-i18n-label="nav.label">
+    <button type="button" role="tab" id="tab-generate" aria-controls="view-generate" aria-selected="true" data-view="generate" data-i18n="nav.generate">Generate</button>
+    <button type="button" role="tab" id="tab-clean" aria-controls="view-clean" aria-selected="false" tabindex="-1" data-view="clean" data-i18n="nav.clean">Clean</button>
+    <button type="button" role="tab" id="tab-analyze" aria-controls="view-analyze" aria-selected="false" tabindex="-1" data-view="analyze" data-i18n="nav.analyze">Analyze</button>
+    <span class="switcher-thumb" aria-hidden="true"></span>
+  </nav>
+  <div class="topbar-end">
+    <div class="lang" role="group" aria-label="Language" data-i18n-label="nav.language">
+      <button type="button" data-lang="tr" aria-pressed="false">TR</button>
+      <button type="button" data-lang="en" aria-pressed="true">EN</button>
+    </div>
+    <button type="button" class="text-btn" id="about-open" data-i18n="about.open">About</button>
+  </div>
+</header>
+
+<main>
+  <!-- Generate -->
+  <section class="view" id="view-generate" role="tabpanel" aria-labelledby="tab-generate">
+    <div class="workbench">
+      <div class="recipe">
+        <div class="field">
+          <div class="field-head">
+            <label class="field-label" for="word-input" data-i18n="gen.words">Words</label>
+            <span class="field-count" id="word-count"></span>
+          </div>
+          <p class="hint" data-i18n="gen.wordsHint"></p>
+          <div class="chips" id="word-chips">
+            <input class="chip-input" id="word-input" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="100">
+          </div>
+          <div class="examples" id="word-examples"><span data-i18n="gen.try">Try</span></div>
+        </div>
+
+        <div class="field">
+          <span class="field-label" id="length-label" data-i18n="gen.length">Length</span>
+          <div class="range-row" role="group" aria-labelledby="length-label">
+            <div class="num">
+              <label for="gen-min" data-i18n="gen.min">Shortest</label>
+              <div class="num-box">
+                <button type="button" class="num-btn" data-step="-1" aria-label="−" data-i18n-label="num.down"><svg class="ico" aria-hidden="true"><use href="#i-minus"/></svg></button>
+                <input id="gen-min" inputmode="numeric" autocomplete="off" maxlength="3">
+                <button type="button" class="num-btn" data-step="1" aria-label="+" data-i18n-label="num.up"><svg class="ico" aria-hidden="true"><use href="#i-plus"/></svg></button>
+              </div>
+            </div>
+            <div class="num">
+              <label for="gen-max" data-i18n="gen.max">Longest</label>
+              <div class="num-box">
+                <button type="button" class="num-btn" data-step="-1" aria-label="−" data-i18n-label="num.down"><svg class="ico" aria-hidden="true"><use href="#i-minus"/></svg></button>
+                <input id="gen-max" inputmode="numeric" autocomplete="off" maxlength="3" placeholder="∞">
+                <button type="button" class="num-btn" data-step="1" aria-label="+" data-i18n-label="num.up"><svg class="ico" aria-hidden="true"><use href="#i-plus"/></svg></button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="field">
+          <span class="field-label" data-i18n="gen.affix">Before and after</span>
+          <div class="affix">
+            <input class="input mono" id="gen-prefix" maxlength="100" autocomplete="off" spellcheck="false" data-i18n-placeholder="gen.prefix" data-i18n-label="gen.prefix">
+            <span class="affix-core" id="affix-core" aria-hidden="true"></span>
+            <input class="input mono" id="gen-suffix" maxlength="100" autocomplete="off" spellcheck="false" data-i18n-placeholder="gen.suffix" data-i18n-label="gen.suffix">
+          </div>
+        </div>
+
+        <div class="field">
+          <span class="field-label" data-i18n="gen.variations">Variations</span>
+          <p class="hint" data-i18n="gen.variationsHint"></p>
+          <div class="variants" id="variants">
+            <button type="button" class="variant" data-mod="uppercase" aria-pressed="false"><span class="knob" aria-hidden="true"></span><span class="variant-name" data-i18n="var.uppercase"></span><span class="variant-sample"></span></button>
+            <button type="button" class="variant" data-mod="capitalize" aria-pressed="false"><span class="knob" aria-hidden="true"></span><span class="variant-name" data-i18n="var.capitalize"></span><span class="variant-sample"></span></button>
+            <button type="button" class="variant" data-mod="leet" aria-pressed="false"><span class="knob" aria-hidden="true"></span><span class="variant-name" data-i18n="var.leet"></span><span class="variant-sample"></span></button>
+            <button type="button" class="variant" data-mod="reverse" aria-pressed="false"><span class="knob" aria-hidden="true"></span><span class="variant-name" data-i18n="var.reverse"></span><span class="variant-sample"></span></button>
+            <button type="button" class="variant" data-mod="reverse_capitalize" aria-pressed="false"><span class="knob" aria-hidden="true"></span><span class="variant-name" data-i18n="var.reverse_capitalize"></span><span class="variant-sample"></span></button>
+            <button type="button" class="variant" data-mod="reverse_upper" aria-pressed="false"><span class="knob" aria-hidden="true"></span><span class="variant-name" data-i18n="var.reverse_upper"></span><span class="variant-sample"></span></button>
+          </div>
+        </div>
+
+        <details class="more rules" id="gen-rules">
+          <summary><svg class="ico" aria-hidden="true"><use href="#i-chevron"/></svg><span data-i18n="gen.rules">Cleaning rules</span><span class="field-count" id="gen-rules-count"></span></summary>
+          <p class="hint" data-i18n="gen.rulesHint"></p>
+          <div class="filter-groups" id="gen-groups"></div>
+        </details>
+
+        <details class="more" id="gen-more">
+          <summary><svg class="ico" aria-hidden="true"><use href="#i-chevron"/></svg><span data-i18n="common.more">More options</span></summary>
+          <div class="more-grid">
+            <div class="field">
+              <label class="field-label small" for="gen-output" data-i18n="common.fileName">File name</label>
+              <input class="input mono" id="gen-output" maxlength="120" autocomplete="off" spellcheck="false">
+            </div>
+            <div class="field">
+              <label class="field-label small" for="gen-limit" data-i18n="gen.limit">Stop after</label>
+              <input class="input" id="gen-limit" inputmode="numeric" autocomplete="off" maxlength="12" data-i18n-placeholder="gen.limitPlaceholder">
+            </div>
+            <div class="field wide">
+              <span class="field-label small" id="dedup-label" data-i18n="gen.dupes">Duplicates</span>
+              <div class="segmented" role="radiogroup" aria-labelledby="dedup-label" id="gen-dedup">
+                <button type="button" role="radio" aria-checked="true" data-value="memory" data-i18n="dupes.memory"></button>
+                <button type="button" role="radio" aria-checked="false" data-value="disk" data-i18n="dupes.disk"></button>
+                <button type="button" role="radio" aria-checked="false" data-value="none" data-i18n="dupes.none"></button>
+              </div>
+              <p class="hint" id="dedup-hint"></p>
+            </div>
+            <div class="field" id="gen-memory-field">
+              <label class="field-label small" for="gen-memory" data-i18n="gen.maxMemory">Memory cap (MB)</label>
+              <input class="input" id="gen-memory" inputmode="numeric" autocomplete="off" maxlength="7" data-i18n-placeholder="gen.limitPlaceholder">
+            </div>
+            <div class="field switch-field">
+              <span class="field-label small" id="gzip-label" data-i18n="gen.gzip">Compress (.gz)</span>
+              <button type="button" class="switch" role="switch" aria-checked="false" aria-labelledby="gzip-label" id="gen-gzip"></button>
+            </div>
+          </div>
+        </details>
+      </div>
+
+      <section class="output" id="gen-panel" aria-labelledby="gen-count">
+        <div class="output-head">
+          <div class="count-row">
+            <div class="big-number" id="gen-count">0</div>
+            <div class="output-caption" id="gen-caption"></div>
+          </div>
+          <p class="notice" id="gen-notice" hidden></p>
+        </div>
+        <div class="stage">
+          <figure class="wheel-box">
+            <div class="wheel" id="gen-wheel" aria-hidden="true"></div>
+            <figcaption class="reading">
+              <span class="reading-label" data-i18n="gen.window">In the window</span>
+              <code class="reading-line" id="gen-reading"></code>
+            </figcaption>
+          </figure>
+          <div class="output-body">
+            <div class="list-head">
+              <span id="gen-list-title"></span>
+              <span class="list-key" id="gen-fresh-key" data-i18n="gen.freshKey" hidden></span>
+            </div>
+            <ol class="lines" id="gen-lines" tabindex="0" aria-labelledby="gen-list-title"></ol>
+            <p class="empty" id="gen-empty" data-i18n="gen.empty"></p>
+          </div>
+        </div>
+        <div class="result-bar" id="gen-result" hidden></div>
+      </section>
+    </div>
+
+    <footer class="dock" id="gen-dock">
+      <span class="dock-fill" aria-hidden="true"></span>
+      <div class="dock-cmd">
+        <span class="dock-prompt" aria-hidden="true">$</span>
+        <code class="dock-code" id="gen-command"></code>
+        <button type="button" class="dock-copy"><svg class="ico" aria-hidden="true"><use href="#i-copy"/></svg><span data-i18n="dock.copy">Copy</span></button>
+      </div>
+      <div class="dock-status" hidden></div>
+      <p class="dock-reason"></p>
+      <button type="button" class="run" id="gen-run" data-label="gen.run"></button>
+    </footer>
+  </section>
+
+  <!-- Clean -->
+  <section class="view" id="view-clean" role="tabpanel" aria-labelledby="tab-clean" hidden>
+    <div class="workbench">
+      <div class="recipe">
+        <div class="field">
+          <span class="field-label" data-i18n="src.title">Wordlist</span>
+          <div class="source" id="clean-source"></div>
+        </div>
+        <div class="suggest" id="clean-suggest" hidden>
+          <span id="clean-suggest-text"></span>
+          <button type="button" class="btn small" id="clean-suggest-apply" data-i18n="clean.apply">Apply</button>
+        </div>
+        <div class="field">
+          <div class="field-head">
+            <span class="field-label" data-i18n="clean.filters">What to remove</span>
+            <span class="field-count" id="clean-count"></span>
+          </div>
+          <p class="hint" data-i18n="clean.filtersHint"></p>
+          <div class="filter-groups" id="clean-groups"></div>
+        </div>
+        <details class="more">
+          <summary><svg class="ico" aria-hidden="true"><use href="#i-chevron"/></svg><span data-i18n="common.more">More options</span></summary>
+          <div class="more-grid">
+            <div class="field wide">
+              <span class="field-label small" id="clean-length-label" data-i18n="clean.length">Keep lengths</span>
+              <div class="range-row" role="group" aria-labelledby="clean-length-label">
+                <div class="num">
+                  <label for="clean-min" data-i18n="gen.min">Shortest</label>
+                  <div class="num-box">
+                    <button type="button" class="num-btn" data-step="-1" aria-label="−" data-i18n-label="num.down"><svg class="ico" aria-hidden="true"><use href="#i-minus"/></svg></button>
+                    <input id="clean-min" inputmode="numeric" autocomplete="off" maxlength="4" placeholder="–">
+                    <button type="button" class="num-btn" data-step="1" aria-label="+" data-i18n-label="num.up"><svg class="ico" aria-hidden="true"><use href="#i-plus"/></svg></button>
+                  </div>
+                </div>
+                <div class="num">
+                  <label for="clean-max" data-i18n="gen.max">Longest</label>
+                  <div class="num-box">
+                    <button type="button" class="num-btn" data-step="-1" aria-label="−" data-i18n-label="num.down"><svg class="ico" aria-hidden="true"><use href="#i-minus"/></svg></button>
+                    <input id="clean-max" inputmode="numeric" autocomplete="off" maxlength="4" placeholder="∞">
+                    <button type="button" class="num-btn" data-step="1" aria-label="+" data-i18n-label="num.up"><svg class="ico" aria-hidden="true"><use href="#i-plus"/></svg></button>
+                  </div>
+                </div>
+              </div>
+              <p class="hint" data-i18n="clean.lengthHint"></p>
+            </div>
+            <div class="field">
+              <label class="field-label small" for="clean-output" data-i18n="common.fileName">File name</label>
+              <input class="input mono" id="clean-output" maxlength="120" autocomplete="off" spellcheck="false">
+            </div>
+            <div class="field switch-field">
+              <span class="field-label small" id="stats-label" data-i18n="clean.stats">Save a statistics report</span>
+              <button type="button" class="switch" role="switch" aria-checked="false" aria-labelledby="stats-label" id="clean-stats"></button>
+            </div>
+          </div>
+        </details>
+      </div>
+
+      <section class="output" id="clean-panel" aria-labelledby="clean-out">
+        <div class="stage">
+          <figure class="wheel-box"><div class="wheel" id="clean-wheel" aria-hidden="true"></div></figure>
+          <div class="funnel">
+            <div class="funnel-nums">
+              <div class="funnel-end">
+                <div class="big-number" id="clean-in">0</div>
+                <div class="output-caption" data-i18n="clean.before">lines in</div>
+              </div>
+              <div class="funnel-end">
+                <div class="big-number" id="clean-out">0</div>
+                <div class="output-caption" data-i18n="clean.after">lines kept</div>
+                <span class="pill" id="clean-reduced" hidden></span>
+              </div>
+            </div>
+            <div class="funnel-mid">
+              <h3 class="subhead" data-i18n="clean.removedBy">Removed by</h3>
+              <div class="bars" id="clean-bars"></div>
+              <p class="empty compact" id="clean-empty" data-i18n="clean.idle"></p>
+            </div>
+          </div>
+        </div>
+        <div class="result-bar" id="clean-result" hidden></div>
+      </section>
+    </div>
+
+    <footer class="dock" id="clean-dock">
+      <span class="dock-fill" aria-hidden="true"></span>
+      <div class="dock-cmd">
+        <span class="dock-prompt" aria-hidden="true">$</span>
+        <code class="dock-code" id="clean-command"></code>
+        <button type="button" class="dock-copy"><svg class="ico" aria-hidden="true"><use href="#i-copy"/></svg><span data-i18n="clean.copyConfig">Copy config</span></button>
+      </div>
+      <div class="dock-status" hidden></div>
+      <p class="dock-reason"></p>
+      <button type="button" class="run" id="clean-run" data-label="clean.run"></button>
+    </footer>
+  </section>
+
+  <!-- Analyze -->
+  <section class="view" id="view-analyze" role="tabpanel" aria-labelledby="tab-analyze" hidden>
+    <div class="workbench">
+      <div class="recipe">
+        <div class="field">
+          <span class="field-label" data-i18n="src.title">Wordlist</span>
+          <div class="source" id="analyze-source"></div>
+        </div>
+        <p class="hint" data-i18n="an.hint"></p>
+      </div>
+
+      <section class="output insights" id="an-panel" aria-live="polite">
+        <div class="stage">
+          <figure class="wheel-box"><div class="wheel" id="an-wheel" aria-hidden="true"></div></figure>
+          <div class="an-side">
+            <p class="empty" id="an-empty" data-i18n="an.empty"></p>
+            <div class="insights-body" id="an-body" hidden>
+              <div class="tiles">
+                <div class="tile"><div class="tile-value" id="an-total">0</div><div class="tile-label" id="an-caption"></div></div>
+                <div class="tile"><div class="tile-value" id="an-min">0</div><div class="tile-label" data-i18n="an.shortest">Shortest</div></div>
+                <div class="tile"><div class="tile-value" id="an-avg">0</div><div class="tile-label" data-i18n="an.average">Average</div></div>
+                <div class="tile"><div class="tile-value" id="an-max">0</div><div class="tile-label" data-i18n="an.longest">Longest</div></div>
+              </div>
+              <section class="chart">
+                <h3 class="subhead" data-i18n="an.lengths">Length distribution</h3>
+                <div class="histogram" id="an-hist"></div>
+              </section>
+              <section class="mix">
+                <h3 class="subhead" data-i18n="an.mix">Character mix</h3>
+                <div class="bars" id="an-mix"></div>
+              </section>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <footer class="dock" id="an-dock">
+      <span class="dock-fill" aria-hidden="true"></span>
+      <div class="dock-cmd">
+        <span class="dock-prompt" aria-hidden="true">$</span>
+        <code class="dock-code" id="an-command"></code>
+        <button type="button" class="dock-copy"><svg class="ico" aria-hidden="true"><use href="#i-copy"/></svg><span data-i18n="dock.copy">Copy</span></button>
+      </div>
+      <div class="dock-status" hidden></div>
+      <p class="dock-reason"></p>
+      <button type="button" class="run" id="an-run" data-label="an.run"></button>
+    </footer>
+  </section>
+</main>
+
+<template id="tpl-source">
+  <div class="drop" data-part="drop">
+    <svg class="ico drop-icon" aria-hidden="true"><use href="#i-tray"/></svg>
+    <strong data-i18n="src.drop">Drop a wordlist here</strong>
+    <span class="hint" data-i18n="src.types"></span>
+    <div class="drop-actions">
+      <button type="button" class="btn small" data-part="choose" data-i18n="src.choose">Choose file</button>
+      <button type="button" class="link" data-part="path-toggle" data-i18n="src.path">Use a path on this computer</button>
+    </div>
+    <input type="file" data-part="file" hidden>
+  </div>
+  <form class="path-form" data-part="path-form" hidden>
+    <input class="input mono" data-part="path" autocomplete="off" spellcheck="false" data-i18n-placeholder="src.pathPlaceholder" data-i18n-label="src.path">
+    <button type="submit" class="btn small" data-i18n="src.use">Use</button>
+    <button type="button" class="btn small ghost" data-part="path-cancel" data-i18n="common.cancel">Cancel</button>
+  </form>
+  <div class="upload" data-part="upload" hidden>
+    <div class="upload-bar"><span data-part="upload-fill"></span></div>
+    <span class="hint" data-part="upload-text"></span>
+  </div>
+  <div class="file-card" data-part="card" hidden>
+    <svg class="ico" aria-hidden="true"><use href="#i-file"/></svg>
+    <div class="file-card-text"><strong data-part="name"></strong><span data-part="meta"></span></div>
+    <button type="button" class="btn small ghost" data-part="change" data-i18n="src.change">Change</button>
+  </div>
+  <div class="recent" data-part="recent" hidden>
+    <span class="recent-label" data-i18n="src.recent">From this session</span>
+    <div class="recent-list" data-part="recent-list"></div>
+  </div>
+</template>
+
+<dialog class="dialog" id="consent" aria-labelledby="consent-title">
+  <div class="dialog-card">
+    <svg class="dialog-mark" aria-hidden="true"><use href="#i-mark"/></svg>
+    <h2 id="consent-title" data-i18n="consent.title">Before you start</h2>
+    <p data-i18n="consent.body"></p>
+    <p data-i18n="about.local"></p>
+    <label class="check"><input type="checkbox" id="consent-check"><span data-i18n="consent.check"></span></label>
+    <div class="dialog-actions"><button type="button" class="run" id="consent-continue" disabled data-i18n="consent.continue">Continue</button></div>
+  </div>
+</dialog>
+
+<dialog class="dialog" id="about" aria-labelledby="about-title">
+  <div class="dialog-card">
+    <svg class="dialog-mark" aria-hidden="true"><use href="#i-mark"/></svg>
+    <h2 id="about-title">BruteForce Helper</h2>
+    <p data-i18n="about.body"></p>
+    <p data-i18n="about.local"></p>
+    <dl class="about-list">
+      <dt data-i18n="about.output">Files are saved in</dt><dd class="mono" id="about-output"></dd>
+      <dt data-i18n="about.shortcutTitle">Shortcut</dt><dd data-i18n="about.shortcut"></dd>
+      <dt data-i18n="about.licenseTitle">License</dt><dd>MIT</dd>
+    </dl>
+    <p class="fine" data-i18n="about.responsible"></p>
+    <div class="dialog-actions">
+      <a class="btn ghost" href="https://github.com/retgere5/BruteForceHelper" target="_blank" rel="noopener noreferrer" data-i18n="about.source">Source code</a>
+      <button type="button" class="btn" id="about-close" data-i18n="common.close">Close</button>
+    </div>
+  </div>
+</dialog>
+
+<dialog class="dialog" id="confirm" aria-labelledby="confirm-title">
+  <div class="dialog-card">
+    <h2 id="confirm-title" data-i18n="confirm.title">Start a large run?</h2>
+    <p id="confirm-body"></p>
+    <div class="dialog-actions">
+      <button type="button" class="btn ghost" id="confirm-cancel" data-i18n="common.cancel">Cancel</button>
+      <button type="button" class="run" id="confirm-ok" data-i18n="confirm.start">Start</button>
+    </div>
+  </div>
+</dialog>
+
+<div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+</body>
+</html>
