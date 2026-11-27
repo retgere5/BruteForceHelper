@@ -77,6 +77,7 @@
       'var.reverse': 'Reversed',
       'var.reverse_capitalize': 'Reversed, capitalized',
       'var.reverse_upper': 'Reversed, uppercase',
+      'var.turkish': 'Turkish letter rules too',
       'gen.limit': 'Stop after (results)',
       'gen.limitPlaceholder': 'No limit',
       'gen.dupes': 'Duplicates',
@@ -283,6 +284,7 @@
       'var.reverse': 'Ters',
       'var.reverse_capitalize': 'Ters, baş harfi büyük',
       'var.reverse_upper': 'Ters, büyük harf',
+      'var.turkish': 'Türkçe harf kuralıyla da',
       'gen.limit': 'Şu kadar sonuçta dur',
       'gen.limitPlaceholder': 'Sınırsız',
       'gen.dupes': 'Tekrarlar',
@@ -460,9 +462,10 @@
     common_words: 'password1',
     leet_speak: 's3cret',
   };
-  const MODIFIERS = ['uppercase', 'capitalize', 'reverse', 'reverse_capitalize', 'reverse_upper', 'leet'];
+  const MODIFIERS = ['uppercase', 'capitalize', 'reverse', 'reverse_capitalize', 'reverse_upper', 'leet', 'turkish'];
   const MODIFIER_FLAGS = {
     uppercase: '-AB', capitalize: '-Ab', reverse: '-ba', reverse_capitalize: '-Ba', reverse_upper: '-BA', leet: '-L337',
+    turkish: '-TR',
   };
   const MIX_KEYS = ['digit_only', 'alpha_only', 'has_upper', 'has_lower', 'has_digit', 'has_special'];
   // FilterStats counts the "too short" rule under a different key than the option
@@ -545,6 +548,8 @@
   const reverseText = (w) => Array.from(w).reverse().join('');
   const capitalize = (w) => (w ? w.charAt(0).toUpperCase() + w.slice(1).toLowerCase() : w);
   const leet = (w) => Array.from(w).map((c) => LEET[c.toLowerCase()] || c).join('');
+  // Turkish keeps the dot: i -> İ and ı -> I
+  const trUpper = (w) => w.replace(/i/g, 'İ').replace(/ı/g, 'I').toUpperCase();
   const VARIANT_SAMPLE = {
     uppercase: (w) => w.toUpperCase(),
     capitalize,
@@ -552,6 +557,7 @@
     reverse: reverseText,
     reverse_capitalize: (w) => capitalize(reverseText(w)),
     reverse_upper: (w) => reverseText(w).toUpperCase(),
+    turkish: (w) => (/[iı]/.test(w) ? trUpper(w) : 'ALİ'),
   };
 
   // A word's position in the list picks its ink everywhere: chip, ring and line
@@ -560,7 +566,13 @@
 
   // Which words a line is made of. Case and leet variants fold onto one
   // canonical spelling; a reversed variant reads that spelling backwards.
-  const canon = (s) => Array.from(s.toLowerCase()).map((c) => LEET[c] || c).join('');
+  // Folding goes character by character so İ (two characters once lowercased)
+  // and the dotless ı keep the line's length.
+  const TR_FOLD = { 'İ': 'i', 'ı': 'i' };
+  const canon = (s) => Array.from(s).map((c) => {
+    const low = TR_FOLD[c] || c.toLowerCase();
+    return LEET[low] || low;
+  }).join('');
 
   function splitLine(line, words, prefix, suffix) {
     const text = canon(line);

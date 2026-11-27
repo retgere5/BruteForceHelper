@@ -58,7 +58,7 @@ EXACT_ESTIMATE_LIMIT = 10 ** 15
 UPLOAD_PREFIX = 'bfh-uploads-'
 STALE_UPLOAD_SECONDS = 6 * 3600
 
-MODIFIER_KEYS = ('uppercase', 'capitalize', 'reverse', 'reverse_capitalize', 'reverse_upper', 'leet')
+MODIFIER_KEYS = ('uppercase', 'capitalize', 'reverse', 'reverse_capitalize', 'reverse_upper', 'leet', 'turkish')
 DEDUP_MODES = ('memory', 'disk', 'none')
 
 SECURITY_HEADERS = (
@@ -464,7 +464,7 @@ class WebApp:
                     max_memory_mb=opts['max_memory'] if opts['dedup'] == 'memory' else None,
                     dedup=opts['dedup'] != 'none', disk_dedup=opts['dedup'] == 'disk',
                     quiet=True, stop_event=job.stop_event, progress=progress,
-                    filters=opts['filters'], live=live)
+                    filters=opts['filters'], live=live, turkish=mods['turkish'])
             except Exception:
                 _discard_if_empty(path)
                 raise

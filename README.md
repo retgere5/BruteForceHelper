@@ -61,6 +61,7 @@ The result is saved to **`combinations.txt`** (change it with `-o myfile.txt`).
 | `-Ab` | `Capitalize` |
 | `-ba` | reverse (`test → tset`) |
 | `-L337` | leet speak (`a→4`, `e→3`, `o→0`…) |
+| `-TR` | follow each case variation with its Turkish form (`ali → ALI, ALİ`, `istanbul → Istanbul, İstanbul`) |
 | `-ws` / `-we` | add text **before** / **after** each word |
 
 > 💡 Run `python PassGenerator.py` with no options to see live examples, or `-h` for the full list.
@@ -184,6 +185,7 @@ Sonuç **`combinations.txt`** dosyasına kaydedilir (`-o dosyam.txt` ile değiş
 | `-Ab` | `Baş harf büyük` |
 | `-ba` | ters çevir (`test → tset`) |
 | `-L337` | leet (`a→4`, `e→3`, `o→0`…) |
+| `-TR` | her büyük/küçük harf varyasyonunun Türkçe kurallı biçimini de ekle (`ali → ALI, ALİ`, `istanbul → Istanbul, İstanbul`) |
 | `-ws` / `-we` | her kelimenin **başına** / **sonuna** ek |
 
 > 💡 Hiç seçenek vermeden `python PassGenerator.py` çalıştırırsan canlı örnekleri, `-h` ile tüm listeyi görürsün.

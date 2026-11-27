@@ -65,7 +65,7 @@ def open_input(filename):
 
 def load_config(path):
     """Load a JSON config file whose keys mirror the command-line options
-    (words, output, min_length, max_length, AB, Ab, ba, Ba, BA, L337,
+    (words, output, min_length, max_length, AB, Ab, ba, Ba, BA, L337, TR,
     word_start, word_end, gzip). Command-line arguments override it."""
     with open(path, 'r', encoding='utf-8') as f:
         return json.load(f)
@@ -167,6 +167,14 @@ def _reversed_upper(text):
     return text[::-1].upper()
 
 
+def _reversed_tr_lower(text):
+    return tr_lower(text[::-1])
+
+
+def _reversed_tr_upper(text):
+    return tr_upper(text[::-1])
+
+
 def _leet_of(variant):
     return lambda text: leet_convert(variant(text))
 
@@ -175,19 +183,27 @@ def _prefix_variants(flags):
     """For each line apply_flags() makes (same order), a function from the first
     characters of a line to text that line is sure to contain, as long as at
     least one more word follows them."""
-    uppercase, capitalize, reverse, reverse_capitalize, reverse_upper, leet = flags
+    uppercase, capitalize, reverse, reverse_capitalize, reverse_upper, leet, turkish = flags
     variants = [str]  # the line itself
     if uppercase:
         variants.append(str.upper)
+        if turkish:
+            variants.append(tr_upper)
     if capitalize:
         variants.append(str.capitalize)
+        if turkish:
+            variants.append(tr_capitalize)
     if reverse or reverse_capitalize or reverse_upper:
         variants.append(_reversed_text)
         if reverse_capitalize:
             # reversed, the line starts with a later word, so these characters end up lowercased
             variants.append(_reversed_lower)
+            if turkish:
+                variants.append(_reversed_tr_lower)
         if reverse_upper:
             variants.append(_reversed_upper)
+            if turkish:
+                variants.append(_reversed_tr_upper)
     if leet:
         variants.extend([_leet_of(variant) for variant in variants])
     return variants
@@ -224,6 +240,29 @@ def leet_convert(word):
         'z': '2', 'Z': '2'
     }
     return ''.join(leet_dict.get(char, char) for char in word)
+
+
+# Turkish keeps the dot: i <-> İ and ı <-> I (Python's own rules turn i into I)
+_TR_UPPER = str.maketrans({'i': 'İ', 'ı': 'I'})
+_TR_LOWER = str.maketrans({'I': 'ı', 'İ': 'i'})
+
+
+def tr_upper(text):
+    """Uppercase by Turkish rules: ali -> ALİ, ırmak -> IRMAK."""
+    return text.translate(_TR_UPPER).upper()
+
+
+def tr_lower(text):
+    """Lowercase by Turkish rules: İSTANBUL -> istanbul, IRMAK -> ırmak."""
+    return text.translate(_TR_LOWER).lower()
+
+
+def tr_capitalize(text):
+    """capitalize() by Turkish rules: istanbul -> İstanbul, ALİ -> Ali."""
+    if not text:
+        return text
+    return (text[0].translate(_TR_UPPER) + text[1:].translate(_TR_LOWER)).capitalize()
+
 
 def max_token_count(words, max_length):
     """How many tokens to combine.
@@ -285,10 +324,12 @@ def count_base_combinations(words, min_length, max_length):
 def variation_multiplier(modifiers):
     """Lines each base word turns into with these variations, before dedup (the
     same count apply_flags() returns)."""
-    uppercase, capitalize, reverse, reverse_capitalize, reverse_upper, leet = compile_modifiers(modifiers)
-    # any reversed variant also brings the plain reversed word with it
-    multiplier = (1 + uppercase + capitalize + (reverse or reverse_capitalize or reverse_upper)
-                  + reverse_capitalize + reverse_upper)
+    uppercase, capitalize, reverse, reverse_capitalize, reverse_upper, leet, turkish = compile_modifiers(modifiers)
+    # any reversed variant also brings the plain reversed word with it; with turkish
+    # every case variation comes twice (its Turkish form follows it)
+    case = 1 + turkish
+    multiplier = (1 + (uppercase + capitalize + reverse_capitalize + reverse_upper) * case
+                  + (reverse or reverse_capitalize or reverse_upper))
     return multiplier * 2 if leet else multiplier
 
 
@@ -300,7 +341,9 @@ def calculate_total_combinations(words, min_length, max_length, modifiers):
 
 def estimate_output_bytes(words, min_length, max_length, modifiers, word_start=None, word_end=None):
     """Size of the output before dedup: every line inside the bounds with its
-    prefix, suffix and line ending, once per variation."""
+    prefix, suffix and line ending, once per variation. Exact while variations keep
+    each character's byte length (ASCII, leet); case changes such as ı -> I or
+    i -> İ can move it by a byte or two per line."""
     sequences, size = _bounded_totals(words, min_length, max_length)
     extra = len((word_start or '').encode('utf-8')) + len((word_end or '').encode('utf-8')) + len(os.linesep)
     return (size + sequences * extra) * variation_multiplier(modifiers)
@@ -451,26 +494,36 @@ def compile_modifiers(modifiers):
         bool(modifiers.get('reverse_capitalize')),
         bool(modifiers.get('reverse_upper')),
         bool(modifiers.get('leet')),
+        bool(modifiers.get('turkish')),
     )
 
 def apply_flags(word, flags):
     """Apply modifications from precompiled flags. Produces the same list (and order)
-    as :func:`apply_modifications`, but without per-call dictionary lookups."""
-    uppercase, capitalize, reverse, reverse_capitalize, reverse_upper, leet = flags
+    as :func:`apply_modifications`, but without per-call dictionary lookups. With
+    ``turkish`` each case variation is followed by its Turkish-case form."""
+    uppercase, capitalize, reverse, reverse_capitalize, reverse_upper, leet, turkish = flags
     results = [word]
     # Case modifications
     if uppercase:
         results.append(word.upper())
+        if turkish:
+            results.append(tr_upper(word))
     if capitalize:
         results.append(word.capitalize())
+        if turkish:
+            results.append(tr_capitalize(word))
     # Reverse modifications
     if reverse or reverse_capitalize or reverse_upper:
         reversed_word = word[::-1]
         results.append(reversed_word)
         if reverse_capitalize:
             results.append(reversed_word.capitalize())
+            if turkish:
+                results.append(tr_capitalize(reversed_word))
         if reverse_upper:
             results.append(reversed_word.upper())
+            if turkish:
+                results.append(tr_upper(reversed_word))
     # Leet speak (applied to everything produced so far)
     if leet:
         results.extend([leet_convert(w) for w in results])
@@ -530,7 +583,8 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
                                  reverse=False, reverse_capitalize=False, reverse_upper=False, leet=False,
                                  word_start=None, word_end=None, use_gzip=False, limit=None, max_memory_mb=None,
                                  dedup=True, resume=False, disk_dedup=False,
-                                 quiet=False, progress=None, stop_event=None, filters=None, live=None):
+                                 quiet=False, progress=None, stop_event=None, filters=None, live=None,
+                                 turkish=False):
     """Generate every combination and write them to `filename`.
 
     ``filters`` names WordlistOptimizer rules: a line any of them matches is dropped
@@ -565,6 +619,9 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
             'reverse_upper': reverse_upper,
             'leet': leet
         }
+        if turkish:
+            # only present when on, so checkpoints of runs without it keep matching
+            modifiers['turkish'] = True
         rule = make_rule_check(filters)
         keep = rule[0] if rule else None
         pruner = make_pruner(filters, modifiers, lst, word_start, word_end)
@@ -876,6 +933,8 @@ def print_usage_examples():
     print("     Generates reversed and capitalized version (Tset)")
     print("     python PassGenerator.py -w test -BA")
     print("     Generates reversed uppercase version (TSET)")
+    print("     python PassGenerator.py -w ali -AB -TR")
+    print("     Adds the Turkish uppercase as well (ALI and ALİ)")
     print(f"\n  {Fore.YELLOW}5. Leet mode:{Style.RESET_ALL}")
     print("     python PassGenerator.py -w test -L337")
     print("     Generates leet speak version (7357)")
@@ -942,6 +1001,9 @@ def main():
                       help='Reverse and convert words to uppercase')
     parser.add_argument('-L337', action='store_true',
                       help='Convert letters to leet speak (e.g., LEET -> L337)')
+    parser.add_argument('-TR', action='store_true',
+                      help='Follow each case variation with its Turkish form '
+                           '(ali -> ALI and ALİ, istanbul -> Istanbul and İstanbul)')
     
     # Word boundary arguments
     parser.add_argument('-ws', '--word-start',
@@ -965,8 +1027,8 @@ def main():
                       help='Checkpoint the run and resume it if interrupted')
     parser.add_argument('--filters', nargs='+', metavar='RULE',
                       help='Drop lines with WordlistOptimizer rules before they are written '
-                           '(names separated by spaces or commas, or "all"). '
-                           'Smaller file, slower run.')
+                           '(names separated by spaces or commas, or "all"). Smaller file; '
+                           'rules that look for a piece inside the line skip those lines unbuilt.')
 
     # Web interface
     parser.add_argument('--webui', action='store_true',
@@ -1043,6 +1105,7 @@ def main():
             reverse_capitalize=args.Ba,
             reverse_upper=args.BA,
             leet=args.L337,
+            turkish=args.TR,
             word_start=args.word_start,
             word_end=args.word_end,
             use_gzip=use_gzip,

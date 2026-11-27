@@ -58,6 +58,65 @@ def test_apply_modifications_leet_applies_to_all_prior():
     assert "7357" in res   # leet of "test" (and of "TEST")
 
 
+# --- Turkish case -------------------------------------------------------------------
+
+def test_turkish_case_helpers():
+    assert pg.tr_upper('ali') == 'ALİ'
+    assert pg.tr_upper('ırmak') == 'IRMAK'
+    assert pg.tr_upper('şifre') == 'ŞİFRE'
+    assert pg.tr_lower('İSTANBUL') == 'istanbul'
+    assert pg.tr_lower('IRMAK') == 'ırmak'
+    assert pg.tr_capitalize('istanbul') == 'İstanbul'
+    assert pg.tr_capitalize('ALİ') == 'Ali'
+    assert pg.tr_capitalize('IŞIK') == 'Işık'
+    assert pg.tr_capitalize('') == ''
+
+
+def test_turkish_forms_follow_each_case_variant():
+    assert pg.apply_modifications('ali', _mods(uppercase=True, capitalize=True, turkish=True)) == \
+        ['ali', 'ALI', 'ALİ', 'Ali', 'Ali']
+    assert pg.apply_modifications('ali', _mods(reverse_capitalize=True, reverse_upper=True, turkish=True)) == \
+        ['ali', 'ila', 'Ila', 'İla', 'ILA', 'İLA']
+    assert pg.apply_modifications('ali', _mods(uppercase=True, turkish=True, leet=True)) == \
+        ['ali', 'ALI', 'ALİ', '411', '411', '41İ']
+
+
+def test_turkish_case_alone_changes_nothing():
+    assert pg.apply_modifications('ali', _mods(turkish=True)) == ['ali']
+
+
+def test_turkish_case_with_rules_still_skips_branches(tmp_path):
+    result = pg.generate_and_save_combinations(['ali', 'iş', '1', '!'], str(tmp_path / "o.txt"), 4, 8,
+                                               quiet=True, uppercase=True, turkish=True,
+                                               filters=['pattern_repetition'])
+    assert result['skipped'] > 0
+
+
+def test_checkpoint_signature_without_turkish_is_unchanged(tmp_path, monkeypatch):
+    out = tmp_path / "o.txt"
+    _interrupt_after(monkeypatch, 2)
+    pg.generate_and_save_combinations(['a', 'b', 'c'], str(out), 1, 3, resume=True)
+    saved = json.loads((tmp_path / "o.txt.pgckpt").read_text(encoding='utf-8'))['signature']
+    assert saved == pg.generation_signature(['a', 'b', 'c'], 1, 3, _mods(), None, None, False)
+
+
+def test_cli_turkish_case_flag(tmp_path, monkeypatch):
+    out = tmp_path / "o.txt"
+    monkeypatch.setattr(sys, 'argv', ['PassGenerator.py', '-w', 'ali', '-AB', '-TR', '-o', str(out)])
+    pg.main()
+    assert out.read_text(encoding='utf-8').split() == ['ali', 'ALI', 'ALİ']
+
+
+def test_config_turkish_case_key(tmp_path, monkeypatch):
+    out = tmp_path / "o.txt"
+    cfg = tmp_path / "c.json"
+    cfg.write_text(json.dumps({'words': ['istanbul'], 'Ab': True, 'TR': True, 'output': str(out)}),
+                   encoding='utf-8')
+    monkeypatch.setattr(sys, 'argv', ['PassGenerator.py', '-c', str(cfg)])
+    pg.main()
+    assert out.read_text(encoding='utf-8').split() == ['istanbul', 'Istanbul', 'İstanbul']
+
+
 def test_generate_base_combinations_lengths():
     combos = list(pg.generate_base_combinations(["a", "b"], 1, None))
     assert set(combos) == {"a", "b", "aa", "ab", "ba", "bb"}
@@ -330,7 +389,7 @@ def test_estimate_scales_with_variations():
 def test_variation_count_matches_the_lines_each_word_turns_into():
     # -Ba / -BA alone also bring the plain reversed word with them
     from itertools import product
-    keys = ['uppercase', 'capitalize', 'reverse', 'reverse_capitalize', 'reverse_upper', 'leet']
+    keys = ['uppercase', 'capitalize', 'reverse', 'reverse_capitalize', 'reverse_upper', 'leet', 'turkish']
     for values in product([False, True], repeat=len(keys)):
         mods = dict(zip(keys, values))
         assert pg.variation_multiplier(mods) == len(pg.apply_modifications('abc', mods)), mods
@@ -491,6 +550,10 @@ PRUNE_CASES = [
     (['19', '9', '0', '5'], 4, 10, {}, ['year_patterns', 'date_patterns', 'phone_patterns'], None, '!'),
     (['a', 'a', 'b'], 1, 6, {}, ['pattern_repetition'], None, None),
     (['ab', 'c'], 1, None, {'capitalize': True}, ['pattern_repetition'], 'ab', None),
+    (['ali', 'İz', 'ış', '1'], 2, 8, {'uppercase': True, 'capitalize': True, 'turkish': True},
+     ['pattern_repetition', 'sequential_chars'], None, None),
+    (['ılık', 'Işık', 'i', '7'], 2, 9, {'reverse_capitalize': True, 'reverse_upper': True, 'turkish': True,
+                                       'leet': True}, 'all', 'x', None),
     (['ab', '', 'a'], 1, 5, {'reverse_capitalize': True}, ['pattern_repetition'], None, None),
     (['ΣΣ', 'σ', 'a'], 1, 6, {'capitalize': True, 'reverse_capitalize': True}, ['pattern_repetition'], None, None),
 ]

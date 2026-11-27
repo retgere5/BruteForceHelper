@@ -362,6 +362,29 @@ def test_generate_with_rules_matches_cli(ui, tmp_path):
     assert job["progress"]["processed"] == 16 and job["progress"]["filtered"] == 4
 
 
+def test_preview_turkish_case(ui):
+    body = {"words": ["ali"], "min_length": 1, "max_length": 3,
+            "modifiers": {"uppercase": True, "turkish": True}}
+    status, data = ui.json("POST", "/api/generate/preview", body)
+    assert status == 200
+    assert data["sample"] == ["ali", "ALI", "ALİ"]
+    assert data["estimate"] == 3
+
+
+def test_generate_turkish_case_matches_cli(ui, tmp_path):
+    body = {"words": ["istanbul", "1"], "min_length": 1, "max_length": 10,
+            "modifiers": {"capitalize": True, "turkish": True}, "output": "tr.txt"}
+    status, job = ui.json("POST", "/api/generate", body)
+    assert status == 202
+    job = ui.wait(job["id"])
+    assert job["state"] == "done", job
+    reference = tmp_path / "ref.txt"
+    pg.generate_and_save_combinations(["istanbul", "1"], str(reference), 1, 10, capitalize=True, turkish=True,
+                                      quiet=True)
+    with open(os.path.join(ui.app.output_dir, "tr.txt"), encoding="utf-8") as f:
+        assert f.read().splitlines() == reference.read_text(encoding="utf-8").splitlines()
+
+
 def test_generate_reports_lines_skipped_by_rules(ui, tmp_path):
     words = ["ab", "a", "1", "!"]
     body = {"words": words, "min_length": 4, "max_length": 8, "filters": ["pattern_repetition"],
