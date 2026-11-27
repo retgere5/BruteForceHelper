@@ -7,6 +7,7 @@ import hashlib
 import sqlite3
 from tqdm import tqdm
 from itertools import product
+from types import SimpleNamespace
 import argparse
 import os
 from colorama import init, Fore, Style
@@ -69,13 +70,45 @@ def load_config(path):
     with open(path, 'r', encoding='utf-8') as f:
         return json.load(f)
 
-def generation_signature(words, min_length, max_length, modifiers, word_start, word_end, use_gzip):
+def generation_signature(words, min_length, max_length, modifiers, word_start, word_end, use_gzip,
+                         filters=None):
     """Stable fingerprint of the generation parameters, used to validate a resume."""
-    payload = json.dumps({
+    fields = {
         'words': list(words), 'min': min_length, 'max': max_length,
         'modifiers': modifiers, 'ws': word_start, 'we': word_end, 'gzip': bool(use_gzip),
-    }, sort_keys=True)
+    }
+    if filters:
+        # only present when rules are on, so older checkpoints keep matching
+        fields['filters'] = sorted(set(filters))
+    payload = json.dumps(fields, sort_keys=True)
     return hashlib.sha1(payload.encode('utf-8')).hexdigest()
+
+
+def filter_rule_names():
+    """WordlistOptimizer's cleaning rules, usable with --filters (loaded on demand,
+    so runs without rules never import the cleaner)."""
+    from modules.settings_manager import Settings
+    return tuple(Settings.DEFAULT_FILTERS)
+
+
+def make_rule_check(filters):
+    """(check, stats) for the given rule names, where check(line) is True for lines
+    to keep and stats.stats counts removals per rule; None when no rules are on."""
+    names = set(filters or ())
+    if not names:
+        return None
+    known = filter_rule_names()
+    unknown = sorted(names.difference(known))
+    if unknown:
+        raise ValueError(f"unknown rule(s): {', '.join(unknown)} (choose from: {', '.join(known)})")
+    from modules.filters import PasswordFilter, FilterStats
+    options = SimpleNamespace(**{name: name in names for name in known})
+    password_filter = PasswordFilter()
+    stats = FilterStats()
+
+    def check(line):
+        return password_filter.is_valid_password(line, options, stats)
+    return check, stats
 
 def save_checkpoint(path, signature, position, written):
     """Atomically persist resume state (position = base words fully processed)."""
@@ -123,45 +156,129 @@ def max_token_count(words, max_length):
         return max(1, max_length // shortest)
     return len(words)
 
+def _bounded_totals(words, min_length, max_length):
+    """(sequences, their total UTF-8 bytes) over every 1..max_token_count() word
+    sequence whose joined length lies inside the bounds."""
+    if not words:
+        return 0, 0
+    floor = min_length or 0
+    groups = {}  # word length -> [words of that length, their bytes together]
+    for word in words:
+        group = groups.setdefault(len(word), [0, 0])
+        group[0] += 1
+        group[1] += len(word.encode('utf-8'))
+    # ways[length] = (sequences of the current token count with that joined length,
+    # their bytes). Without a max length only "reached the floor or not" matters
+    # past the floor, so those lengths share one bucket.
+    ways = {0: (1, 0)}
+    sequences = size = 0
+    for _ in range(max_token_count(words, max_length)):
+        grown = {}
+        for length, (count, total) in ways.items():
+            for chars, (n, group_bytes) in groups.items():
+                new = length + chars
+                if max_length:
+                    if new > max_length:
+                        continue
+                elif new > floor:
+                    new = floor
+                old_count, old_total = grown.get(new, (0, 0))
+                grown[new] = (old_count + count * n, old_total + total * n + count * group_bytes)
+        ways = grown
+        if not ways:
+            break
+        for length, (count, total) in ways.items():
+            if length >= floor:
+                sequences += count
+                size += total
+    return sequences, size
+
+
+def count_base_combinations(words, min_length, max_length):
+    """Exact number of word sequences generate_base_combinations() yields, counted
+    before dedup (a prefix/suffix does not change the count)."""
+    return _bounded_totals(words, min_length, max_length)[0]
+
+
+def variation_multiplier(modifiers):
+    """Lines each base word turns into with these variations, before dedup."""
+    multiplier = 1 + sum(1 for key in ('uppercase', 'capitalize', 'reverse', 'reverse_capitalize',
+                                       'reverse_upper') if modifiers.get(key))
+    return multiplier * 2 if modifiers.get('leet') else multiplier
+
+
 def calculate_total_combinations(words, min_length, max_length, modifiers):
-    """Estimate the number of combinations (drives the progress bar only)."""
-    word_count = len(words)
-    max_tokens = max_token_count(words, max_length)
-    base_combinations = sum(word_count ** i for i in range(1, max_tokens + 1))
+    """Lines the run will consider: the exact base count times one per variation
+    (an upper bound for the written count, since duplicates are dropped)."""
+    return count_base_combinations(words, min_length, max_length) * variation_multiplier(modifiers)
 
-    # Calculate modifier multiplier
-    modifier_multiplier = 1
-    if modifiers.get('uppercase'):
-        modifier_multiplier += 1
-    if modifiers.get('capitalize'):
-        modifier_multiplier += 1
-    if modifiers.get('reverse'):
-        modifier_multiplier += 1
-    if modifiers.get('reverse_capitalize'):
-        modifier_multiplier += 1
-    if modifiers.get('reverse_upper'):
-        modifier_multiplier += 1
-    if modifiers.get('leet'):
-        modifier_multiplier *= 2
 
-    return base_combinations * modifier_multiplier
+def estimate_output_bytes(words, min_length, max_length, modifiers, word_start=None, word_end=None):
+    """Size of the output before dedup: every line inside the bounds with its
+    prefix, suffix and line ending, once per variation."""
+    sequences, size = _bounded_totals(words, min_length, max_length)
+    extra = len((word_start or '').encode('utf-8')) + len((word_end or '').encode('utf-8')) + len(os.linesep)
+    return (size + sequences * extra) * variation_multiplier(modifiers)
 
-def generate_base_combinations(words, min_length, max_length, word_start=None, word_end=None):
+def _until_set(iterable, stop_event, every=4096):
+    """Yield from `iterable` until `stop_event.is_set()` (checked every `every` items)."""
+    for i, item in enumerate(iterable):
+        if not i % every and stop_event.is_set():
+            return
+        yield item
+
+def generate_base_combinations(words, min_length, max_length, word_start=None, word_end=None, stop_event=None):
     """Generator for base word combinations.
 
     ``min_length``/``max_length`` bound the *character length* of each combined
-    string; the token count is bounded by :func:`max_token_count`.
+    string; the token count is bounded by :func:`max_token_count`. Generation
+    ends early once ``stop_event`` (anything with ``is_set()``) is set.
     """
+    if not words:
+        return
     max_tokens = max_token_count(words, max_length)
-    for length in range(1, max_tokens + 1):
-        for combo in product(words, repeat=length):
-            combined = ''.join(combo)
-            if len(combined) >= min_length and (not max_length or len(combined) <= max_length):
-                if word_start:
-                    combined = word_start + combined
-                if word_end:
-                    combined = combined + word_end
-                yield combined
+    lengths = [len(w) for w in words]
+    shortest, longest = min(lengths), max(lengths)
+    floor = min_length or 0
+    for count in range(1, max_tokens + 1):
+        # Too few tokens to ever reach min_length: skip the whole round
+        if count * longest < floor:
+            continue
+        if (not max_length or count * longest <= max_length) and count * shortest >= floor:
+            # every sequence of this many words fits: plain product(), no length checks
+            combos = (''.join(combo) for combo in product(words, repeat=count))
+        else:
+            combos = _bounded_products(words, lengths, count, floor, max_length, shortest, longest)
+        if stop_event is not None:
+            combos = _until_set(combos, stop_event)
+        for combined in combos:
+            if word_start:
+                combined = word_start + combined
+            if word_end:
+                combined = combined + word_end
+            yield combined
+        if stop_event is not None and stop_event.is_set():
+            return
+
+
+def _bounded_products(words, lengths, count, floor, max_length, shortest, longest):
+    """The ``count``-word sequences whose joined length fits the bounds, in the same
+    order product() would give them, without walking prefixes that can no longer fit
+    (short words otherwise make product() visit billions of sequences for nothing)."""
+    def extend(prefix, used, rest):
+        for word, size in zip(words, lengths):
+            total, left = used + size, rest - 1
+            if (max_length and total + left * shortest > max_length) or total + left * longest < floor:
+                continue
+            if not left:
+                yield prefix + word
+            elif (not max_length or total + left * longest <= max_length) and total + left * shortest >= floor:
+                # nothing below this prefix can leave the bounds
+                for tail in product(words, repeat=left):
+                    yield prefix + word + ''.join(tail)
+            else:
+                yield from extend(prefix + word, total, left)
+    return extend('', 0, count)
 
 def compile_modifiers(modifiers):
     """Precompute modifier flags once so the hot loop avoids per-word dict lookups."""
@@ -201,6 +318,43 @@ def apply_modifications(word, modifiers):
     """Apply modifications in a specific order (thin wrapper over the fast path)."""
     return apply_flags(word, compile_modifiers(modifiers))
 
+class _Deadline:
+    """Event-like time budget: is_set() turns true once `seconds` have passed."""
+    def __init__(self, seconds):
+        self._end = time.monotonic() + seconds
+
+    def is_set(self):
+        return time.monotonic() >= self._end
+
+def preview_combinations(words, min_length=1, max_length=None, modifiers=None, word_start=None,
+                         word_end=None, count=40, dedup=True, time_budget=0.25, filters=None):
+    """The first `count` lines a run with these options would write, in the same
+    order. Capped at `time_budget` seconds so it stays cheap enough to call on
+    every keystroke."""
+    flags = compile_modifiers(modifiers or {})
+    has_modifiers = any(flags)
+    rule = make_rule_check(filters)
+    keep = rule[0] if rule else None
+    seen = set()
+    sample = []
+    bases = generate_base_combinations(words, min_length, max_length, word_start, word_end,
+                                       _Deadline(time_budget))
+    for base_word in bases:
+        for word in (apply_flags(base_word, flags) if has_modifiers else (base_word,)):
+            if keep is not None and not keep(word):
+                continue
+            if dedup:
+                if word in seen:
+                    continue
+                seen.add(word)
+            sample.append(word)
+            if len(sample) >= count:
+                return sample
+    return sample
+
+def _silent(*_args, **_kwargs):
+    pass
+
 def write_unique(file, word, seen):
     """Write word to file if not seen before"""
     if word not in seen:
@@ -212,11 +366,28 @@ def write_unique(file, word, seen):
 def generate_and_save_combinations(lst, filename, min_length=1, max_length=None, uppercase=False, capitalize=False,
                                  reverse=False, reverse_capitalize=False, reverse_upper=False, leet=False,
                                  word_start=None, word_end=None, use_gzip=False, limit=None, max_memory_mb=None,
-                                 dedup=True, resume=False, disk_dedup=False):
+                                 dedup=True, resume=False, disk_dedup=False,
+                                 quiet=False, progress=None, stop_event=None, filters=None, live=None):
+    """Generate every combination and write them to `filename`.
+
+    ``filters`` names WordlistOptimizer rules: a line any of them matches is dropped
+    before it is written (and before dedup, so it costs no memory either).
+
+    For programmatic callers such as the web UI: ``quiet`` turns off all console
+    output and lets errors propagate instead of printing them,
+    ``progress(written, estimated_total)`` is called as lines are written,
+    ``live`` (a dict) is kept up to date with ``processed`` (candidate lines seen)
+    and ``filtered_total`` at the same moments, and ``stop_event`` (anything with
+    ``is_set()``) ends the run early while keeping what was already written.
+    Returns a summary dict, or None when the run was interrupted or failed.
+    """
+    say = _silent if quiet else print
     disk_conn = None
     db_path = None
     try:
         if disk_dedup and resume:
+            if quiet:
+                raise ValueError("resume is not supported with disk dedup")
             print(f"{Fore.RED}Error: --resume is not supported with --disk-dedup.{Style.RESET_ALL}")
             return
 
@@ -229,6 +400,8 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
             'reverse_upper': reverse_upper,
             'leet': leet
         }
+        rule = make_rule_check(filters)
+        keep = rule[0] if rule else None
 
         # Calculate total combinations
         total_combinations = calculate_total_combinations(lst, min_length, max_length, modifiers)
@@ -237,18 +410,19 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
 
         # Warn before a very large run
         if total_combinations > LARGE_COMBINATION_WARNING:
-            print(f"{Fore.YELLOW}Warning: about {total_combinations:,} combinations estimated; "
-                  f"this may take a while and use significant disk space.{Style.RESET_ALL}")
+            say(f"{Fore.YELLOW}Warning: about {total_combinations:,} combinations estimated; "
+                f"this may take a while and use significant disk space.{Style.RESET_ALL}")
 
         # Warn if the output location is low on free disk space
         free = check_disk_space(filename)
         if free is not None and free < MIN_FREE_DISK_BYTES:
-            print(f"{Fore.YELLOW}Warning: low free disk space "
-                  f"({free / (1024 * 1024):.0f} MB) on the output location.{Style.RESET_ALL}")
+            say(f"{Fore.YELLOW}Warning: low free disk space "
+                f"({free / (1024 * 1024):.0f} MB) on the output location.{Style.RESET_ALL}")
 
         # Resume support: restore state from a matching checkpoint
         checkpoint_file = filename + '.pgckpt'
-        signature = generation_signature(lst, min_length, max_length, modifiers, word_start, word_end, use_gzip)
+        signature = generation_signature(lst, min_length, max_length, modifiers, word_start, word_end, use_gzip,
+                                         filters)
         seen = set()
         seen_bytes = 0
         written = 0
@@ -270,7 +444,7 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
                     written = len(seen)
                 else:
                     written = checkpoint['written']
-                print(f"{Fore.CYAN}Resuming from {written:,} combinations.{Style.RESET_ALL}")
+                say(f"{Fore.CYAN}Resuming from {written:,} combinations.{Style.RESET_ALL}")
 
         # On-disk dedup: use a temporary SQLite index instead of an in-memory set
         if disk_dedup:
@@ -295,11 +469,13 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
                               bar_format='{desc}: {percentage:.2f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}] {percentage:.2f}%',
                               miniters=1,
                               mininterval=0.1,
-                              smoothing=0.3)
+                              smoothing=0.3,
+                              disable=quiet)
 
             start_time = time.time()
             memory_warned = False
             stop = False
+            stopped_by = None
             base_index = 0
             pending = 0
             max_memory_bytes = max_memory_mb * 1024 * 1024 if max_memory_mb else None
@@ -310,15 +486,25 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
             in_memory_dedup = dedup and not disk_dedup
 
             out_buffer = []
+            processed = 0
+            removed = 0
 
             def flush_buffer():
                 if out_buffer:
                     file.write('\n'.join(out_buffer) + '\n')
                     out_buffer.clear()
 
+            def report():
+                if live is not None:
+                    live['processed'] = processed
+                    live['filtered_total'] = removed
+                if progress is not None:
+                    progress(written, total_combinations)
+
             try:
                 # Generate and process combinations
-                for base_word in generate_base_combinations(lst, min_length, max_length, word_start, word_end):
+                for base_word in generate_base_combinations(lst, min_length, max_length, word_start, word_end,
+                                                            stop_event):
                     if base_index < skip_count:
                         base_index += 1
                         continue
@@ -326,6 +512,18 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
                     # apply_flags() yields the original word first, then its variants
                     words = apply_flags(base_word, mod_flags) if has_modifiers else (base_word,)
                     for word in words:
+                        processed += 1
+                        if keep is not None:
+                            # with rules on, the bar follows candidates (written lags behind)
+                            pending += 1
+                            if pending >= PROGRESS_UPDATE_BATCH:
+                                progress_bar.update(pending)
+                                pending = 0
+                                report()
+                            if not keep(word):
+                                removed += 1
+                                continue
+
                         if disk_dedup:
                             disk_cur.execute("INSERT OR IGNORE INTO words(w) VALUES(?)", (word,))
                             if disk_cur.rowcount != 1:
@@ -342,13 +540,16 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
                             flush_buffer()
 
                         written += 1
-                        pending += 1
-                        if pending >= PROGRESS_UPDATE_BATCH:
-                            progress_bar.update(pending)
-                            pending = 0
+                        if keep is None:
+                            pending += 1
+                            if pending >= PROGRESS_UPDATE_BATCH:
+                                progress_bar.update(pending)
+                                pending = 0
+                                report()
 
                         if limit and written >= limit:
                             stop = True
+                            stopped_by = 'limit'
                             break
 
                         if disk_dedup:
@@ -367,13 +568,14 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
                                 if not memory_warned and used_bytes >= MEMORY_WARNING_BYTES:
                                     memory_warned = True
                                     progress_bar.clear()
-                                    print(f"{Fore.YELLOW}Warning: the dedup set is holding ~"
-                                          f"{used_bytes / (1024*1024):.0f} MB in memory.{Style.RESET_ALL}")
+                                    say(f"{Fore.YELLOW}Warning: the dedup set is holding ~"
+                                        f"{used_bytes / (1024*1024):.0f} MB in memory.{Style.RESET_ALL}")
                                 if max_memory_bytes and used_bytes >= max_memory_bytes:
                                     stop = True
+                                    stopped_by = 'memory'
                                     progress_bar.clear()
-                                    print(f"{Fore.YELLOW}Memory limit reached (~"
-                                          f"{used_bytes / (1024*1024):.0f} MB); stopping generation.{Style.RESET_ALL}")
+                                    say(f"{Fore.YELLOW}Memory limit reached (~"
+                                        f"{used_bytes / (1024*1024):.0f} MB); stopping generation.{Style.RESET_ALL}")
                                     break
 
                     base_index += 1
@@ -394,13 +596,17 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
                     if pending:
                         progress_bar.update(pending)
                     progress_bar.close()
-                    print(f"\n{Fore.YELLOW}Interrupted; checkpoint saved. "
-                          f"Re-run with --resume to continue.{Style.RESET_ALL}")
+                    say(f"\n{Fore.YELLOW}Interrupted; checkpoint saved. "
+                        f"Re-run with --resume to continue.{Style.RESET_ALL}")
                     return
                 raise
             finally:
                 # Ensure buffered output is written on every exit path
                 flush_buffer()
+
+            if stopped_by is None and stop_event is not None and stop_event.is_set():
+                stopped_by = 'user'
+            report()
 
             if pending:
                 progress_bar.update(pending)
@@ -418,17 +624,36 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
                 os.remove(checkpoint_file)
 
             # Print statistics
-            print(f"\n{Fore.GREEN}Combinations saved successfully.{Style.RESET_ALL}")
-            print(f"{Fore.CYAN}Total combinations generated:{Style.RESET_ALL} {Fore.YELLOW}{written:,}{Style.RESET_ALL}")
-            print(f"{Fore.CYAN}Processing time:{Style.RESET_ALL} {Fore.YELLOW}{elapsed_time:.2f}{Style.RESET_ALL} seconds")
-            print(f"{Fore.CYAN}Memory usage:{Style.RESET_ALL} {Fore.YELLOW}{(sys.getsizeof(seen) + seen_bytes) / (1024*1024):.2f}{Style.RESET_ALL} MB")
-            print(f"{Fore.CYAN}File location:{Style.RESET_ALL} {Fore.YELLOW}{os.path.abspath(filename)}{Style.RESET_ALL}")
-            
+            say(f"\n{Fore.GREEN}Combinations saved successfully.{Style.RESET_ALL}")
+            say(f"{Fore.CYAN}Total combinations generated:{Style.RESET_ALL} {Fore.YELLOW}{written:,}{Style.RESET_ALL}")
+            filtered = {name: n for name, n in rule[1].stats.items() if n} if rule else {}
+            if rule:
+                say(f"{Fore.CYAN}Removed by rules:{Style.RESET_ALL} {Fore.YELLOW}{removed:,}{Style.RESET_ALL}"
+                    + ''.join(f"\n  {name}: {n:,}" for name, n in sorted(filtered.items(), key=lambda kv: -kv[1])))
+            say(f"{Fore.CYAN}Processing time:{Style.RESET_ALL} {Fore.YELLOW}{elapsed_time:.2f}{Style.RESET_ALL} seconds")
+            say(f"{Fore.CYAN}Memory usage:{Style.RESET_ALL} {Fore.YELLOW}{(sys.getsizeof(seen) + seen_bytes) / (1024*1024):.2f}{Style.RESET_ALL} MB")
+            say(f"{Fore.CYAN}File location:{Style.RESET_ALL} {Fore.YELLOW}{os.path.abspath(filename)}{Style.RESET_ALL}")
+
+            return {
+                'written': written,
+                'elapsed': elapsed_time,
+                'path': os.path.abspath(filename),
+                'stopped_by': stopped_by,
+                'filtered': filtered,
+                'filtered_total': removed,
+            }
+
     except PermissionError:
+        if quiet:
+            raise
         print(f"{Fore.RED}Error: No write permission for file '{filename}'.{Style.RESET_ALL}")
     except IOError as e:
+        if quiet:
+            raise
         print(f"{Fore.RED}File operation error: {e}{Style.RESET_ALL}")
     except Exception as e:
+        if quiet:
+            raise
         print(f"{Fore.RED}An unexpected error occurred: {e}{Style.RESET_ALL}")
     finally:
         # Always tear down the temporary on-disk dedup database
@@ -475,15 +700,27 @@ def print_usage_examples():
     print("     Adds prefix and suffix to words (admin_test_2023)")
     print(f"\n  {Fore.YELLOW}7. With all parameters:{Style.RESET_ALL}")
     print("     python PassGenerator.py -w a b c -o output.txt -m 2 -M 4 -AB -L337 -ws pre_ -we _post")
+    print(f"\n  {Fore.YELLOW}8. Web interface:{Style.RESET_ALL}")
+    print("     python PassGenerator.py --webui")
+    print("     Opens the tools in your browser (runs only on this computer)")
     print(f"\n{Fore.CYAN}Note: Use quotes for characters containing spaces:{Style.RESET_ALL}")
     print('     python PassGenerator.py -w "123" "abc" "@#$"')
     print(f"\n{Fore.CYAN}Run with -h for all options (compression, config, limits, resume, disk-dedup).{Style.RESET_ALL}")
 
 def main():
-    # Pre-parse --config so it can supply defaults for the real parser
+    # Pre-parse --config (and --webui) before the real parser, which may require -w
     pre_parser = argparse.ArgumentParser(add_help=False)
     pre_parser.add_argument('-c', '--config')
+    pre_parser.add_argument('--webui', action='store_true')
+    pre_parser.add_argument('--port', type=int)
+    pre_parser.add_argument('--no-browser', action='store_true', dest='no_browser')
     pre_args, _ = pre_parser.parse_known_args()
+
+    if pre_args.webui:
+        from webui.server import run
+        run(port=pre_args.port, open_browser=not pre_args.no_browser, start_tab='generate')
+        return
+
     config = {}
     if pre_args.config:
         try:
@@ -542,6 +779,18 @@ def main():
                       help='Deduplicate on disk via SQLite (bounded memory, slower)')
     parser.add_argument('--resume', action='store_true',
                       help='Checkpoint the run and resume it if interrupted')
+    parser.add_argument('--filters', nargs='+', metavar='RULE',
+                      help='Drop lines with WordlistOptimizer rules before they are written '
+                           '(names separated by spaces or commas, or "all"). '
+                           'Smaller file, slower run.')
+
+    # Web interface
+    parser.add_argument('--webui', action='store_true',
+                      help='Open the web interface in your browser (local only)')
+    parser.add_argument('--port', type=int,
+                      help='Port for --webui (default: 8765)')
+    parser.add_argument('--no-browser', action='store_true', dest='no_browser',
+                      help='With --webui, only print the link instead of opening a browser')
 
     # Config values become defaults; explicit CLI arguments still override them
     parser.set_defaults(**config)
@@ -555,7 +804,16 @@ def main():
 
     try:
         args = parser.parse_args()
-        
+
+        filters = None
+        if args.filters:
+            known = filter_rule_names()
+            names = [name for item in args.filters for name in str(item).split(',') if name]
+            filters = list(known) if 'all' in names else names
+            unknown = [name for name in filters if name not in known]
+            if unknown:
+                parser.error(f"unknown rule: {', '.join(unknown)} (choose from: all, {', '.join(known)})")
+
         if not args.words:
             print(f"{Fore.RED}Error: You must specify at least one character.{Style.RESET_ALL}")
             return
@@ -608,7 +866,8 @@ def main():
             max_memory_mb=args.max_memory,
             dedup=not args.no_dedup,
             resume=args.resume,
-            disk_dedup=args.disk_dedup
+            disk_dedup=args.disk_dedup,
+            filters=filters
         )
         
     except Exception as e:

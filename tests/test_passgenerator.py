@@ -292,3 +292,184 @@ def test_disk_dedup_and_resume_conflict_is_refused(tmp_path, capsys):
     pg.generate_and_save_combinations(["a"], str(out), min_length=1, max_length=None, disk_dedup=True, resume=True)
     assert "not supported" in capsys.readouterr().out.lower()
     assert not out.exists()
+
+
+# --- exact estimate -------------------------------------------------------------
+
+USER_WORDS = ['muhammed', 'gunuc', '63', '34', '!', '@', 'prophet', 'retgere', '5']
+
+
+def test_estimate_counts_only_lines_inside_length_bounds():
+    # 1-character words allow 12 words per line, but only 5,061,474 sequences fit 8-12 characters
+    assert pg.count_base_combinations(USER_WORDS, 8, 12) == 5_061_474
+    assert pg.calculate_total_combinations(USER_WORDS, 8, 12, _mods()) == 5_061_474
+
+
+def test_estimate_matches_generated_count():
+    cases = [(['a', 'bb', 'ccc'], 1, 6), (['ab', 'c'], 2, 5), (['x', 'yy'], 3, None),
+             (['admin', 'root', '2024'], 6, 12), (['a', 'a', 'bc'], 2, 4)]
+    for words, mn, mx in cases:
+        produced = sum(1 for _ in pg.generate_base_combinations(words, mn, mx))
+        assert pg.count_base_combinations(words, mn, mx) == produced, (words, mn, mx)
+
+
+def test_estimate_without_max_length_keeps_old_formula():
+    assert pg.count_base_combinations(['a', 'bb', 'ccc'], 1, None) == 3 + 9 + 27
+
+
+def test_estimate_unreachable_min_is_zero():
+    assert pg.count_base_combinations(['a'], 5, 4) == 0
+    assert pg.count_base_combinations(['abc'], 7, 8) == 0
+
+
+def test_estimate_scales_with_variations():
+    base = pg.count_base_combinations(['ab', 'c'], 2, 5)
+    assert pg.calculate_total_combinations(['ab', 'c'], 2, 5, _mods(capitalize=True, leet=True)) == base * 4
+
+
+# --- length-pruned generation -----------------------------------------------------
+
+def _reference_combinations(words, mn, mx, ws=None, we=None):
+    """The original algorithm: every product per token count, filtered by length."""
+    from itertools import product
+    out = []
+    for k in range(1, pg.max_token_count(words, mx) + 1):
+        for combo in product(words, repeat=k):
+            joined = ''.join(combo)
+            if len(joined) >= mn and (not mx or len(joined) <= mx):
+                out.append((ws or '') + joined + (we or ''))
+    return out
+
+
+def test_pruned_generation_matches_product_reference():
+    cases = [
+        (['a', 'bb', 'ccc'], 1, 6, None, None),
+        (['ab', 'c'], 2, 5, '<', '>'),
+        (['x', 'yy'], 3, None, None, None),
+        (['admin', 'root', '2024'], 6, 12, None, '!'),
+        (['a', 'a', 'bc'], 2, 4, None, None),
+        (['abc'], 7, 8, None, None),
+        (['1', '22', '333', '4444'], 5, 9, 'p', None),
+    ]
+    for words, mn, mx, ws, we in cases:
+        got = list(pg.generate_base_combinations(words, mn, mx, ws, we))
+        assert got == _reference_combinations(words, mn, mx, ws, we), (words, mn, mx)
+
+
+def test_generation_skips_infeasible_space_quickly():
+    # a 1-character word allows 20 words per line: 5**20 products, yet only a few
+    # thousand sequences fit in 20 characters
+    import time
+    words = ['!', 'aaaaaaaaaa', 'bbbbbbbbbb', 'cccccccccc', 'dddddddddd']
+    start = time.perf_counter()
+    produced = sum(1 for _ in pg.generate_base_combinations(words, 1, 20))
+    assert produced == pg.count_base_combinations(words, 1, 20)
+    assert time.perf_counter() - start < 10
+
+
+# --- cleaning rules while generating ------------------------------------------------
+
+def _lines(path):
+    return path.read_text(encoding='utf-8').split()
+
+
+def test_rules_drop_lines_before_writing(tmp_path):
+    out = tmp_path / "o.txt"
+    result = pg.generate_and_save_combinations(['a', 'b'], str(out), 4, 4, quiet=True,
+                                               filters=['repetitive_chars'])
+    lines = _lines(out)
+    assert 'aaaa' not in lines and 'bbbb' not in lines
+    assert len(lines) == 14 and result['written'] == 14
+    assert result['filtered_total'] == 2
+    assert result['filtered'] == {'repetitive_chars': 2}
+
+
+def test_no_rules_output_unchanged(tmp_path):
+    out = tmp_path / "o.txt"
+    result = pg.generate_and_save_combinations(['a', 'b'], str(out), 4, 4, quiet=True)
+    assert len(_lines(out)) == 16
+    assert result['filtered_total'] == 0 and result['filtered'] == {}
+
+
+def test_rules_see_prefix_and_suffix(tmp_path):
+    out = tmp_path / "o.txt"
+    result = pg.generate_and_save_combinations(['a'], str(out), 2, 2, word_start='aa', quiet=True,
+                                               filters=['repetitive_chars'])
+    assert result['written'] == 0 and result['filtered_total'] == 1
+
+
+def test_limit_counts_kept_lines(tmp_path):
+    out = tmp_path / "o.txt"
+    pg.generate_and_save_combinations(['a', 'b'], str(out), 4, 4, limit=5, quiet=True,
+                                      filters=['repetitive_chars'])
+    assert _lines(out) == ['aaab', 'aaba', 'aabb', 'abaa', 'abab']
+
+
+def test_live_counters_follow_the_run(tmp_path):
+    live = {}
+    pg.generate_and_save_combinations(['a', 'b'], str(tmp_path / "o.txt"), 4, 4, quiet=True,
+                                      filters=['repetitive_chars'], live=live)
+    assert live == {'processed': 16, 'filtered_total': 2}
+
+
+def test_resume_refuses_changed_rules(tmp_path, monkeypatch, capsys):
+    out = str(tmp_path / "o.txt")
+    words = ['a', 'b', 'c']
+    _interrupt_after(monkeypatch, 3)
+    pg.generate_and_save_combinations(words, out, 1, 3, resume=True, filters=['repetitive_chars'])
+    monkeypatch.undo()
+    capsys.readouterr()
+    pg.generate_and_save_combinations(words, out, 1, 3, resume=True, filters=['sequential_chars'])
+    assert 'Resuming' not in capsys.readouterr().out
+
+
+def test_preview_applies_rules():
+    sample = pg.preview_combinations(['a', 'b'], 4, 4, filters=['repetitive_chars'], count=40)
+    assert 'aaaa' not in sample and 'bbbb' not in sample and len(sample) == 14
+
+
+def test_unknown_rule_is_refused(tmp_path):
+    import pytest
+    with pytest.raises(ValueError):
+        pg.generate_and_save_combinations(['a'], str(tmp_path / "o.txt"), quiet=True, filters=['nope'])
+
+
+def test_cli_unknown_rule_errors(monkeypatch, capsys):
+    import pytest
+    monkeypatch.setattr(sys, 'argv', ['PassGenerator.py', '-w', 'a', '--filters', 'nope'])
+    with pytest.raises(SystemExit):
+        pg.main()
+    assert 'nope' in capsys.readouterr().err
+
+
+def test_cli_filters_all(tmp_path, monkeypatch):
+    out = tmp_path / "o.txt"
+    monkeypatch.setattr(sys, 'argv', ['PassGenerator.py', '-w', 'a', '1', '!', '-m', '4', '-M', '4',
+                                      '-o', str(out), '--filters', 'all'])
+    pg.main()
+    lines = _lines(out)
+    # every rule on: 72 of the 81 mixed lines survive; runs like '!!!!' do not
+    assert len(lines) == 72 and '!!!!' not in lines and 'a1a1' not in lines
+
+
+def test_cli_filters_accept_commas(tmp_path, monkeypatch):
+    out = tmp_path / "o.txt"
+    monkeypatch.setattr(sys, 'argv', ['PassGenerator.py', '-w', 'a', 'b', '-m', '4', '-M', '4',
+                                      '-o', str(out), '--filters', 'repetitive_chars,pattern_repetition'])
+    pg.main()
+    lines = _lines(out)
+    assert 'aaaa' not in lines and 'abab' not in lines and 'aabb' in lines
+
+
+# --- exact size --------------------------------------------------------------------
+
+def test_size_estimate_matches_written_file(tmp_path):
+    out = tmp_path / "o.txt"
+    words = ['ab', 'c', 'ğü']  # 'ğü' is 2 characters but 4 bytes
+    pg.generate_and_save_combinations(words, str(out), 2, 5, word_start='x', quiet=True)
+    assert pg.estimate_output_bytes(words, 2, 5, _mods(), word_start='x') == out.stat().st_size
+
+
+def test_size_estimate_scales_with_variations():
+    plain = pg.estimate_output_bytes(['ab', 'c'], 2, 5, _mods())
+    assert pg.estimate_output_bytes(['ab', 'c'], 2, 5, _mods(capitalize=True)) == plain * 2
