@@ -362,6 +362,20 @@ def test_generate_with_rules_matches_cli(ui, tmp_path):
     assert job["progress"]["processed"] == 16 and job["progress"]["filtered"] == 4
 
 
+def test_generate_reports_lines_skipped_by_rules(ui, tmp_path):
+    words = ["ab", "a", "1", "!"]
+    body = {"words": words, "min_length": 4, "max_length": 8, "filters": ["pattern_repetition"],
+            "output": "skipped.txt"}
+    status, job = ui.json("POST", "/api/generate", body)
+    assert status == 202
+    job = ui.wait(job["id"])
+    assert job["state"] == "done", job
+    reference = pg.generate_and_save_combinations(words, str(tmp_path / "ref.txt"), 4, 8, quiet=True,
+                                                  filters=["pattern_repetition"])
+    assert job["result"]["skipped"] == reference["skipped"] > 0
+    assert job["progress"]["processed"] == pg.calculate_total_combinations(words, 4, 8, {})
+
+
 @pytest.mark.parametrize("rules", [["nope"], "repetitive_chars", [1]])
 def test_unknown_rule_rejected(ui, rules):
     body = {"words": ["a"], "filters": rules}

@@ -73,7 +73,7 @@ The result is saved to **`combinations.txt`** (change it with `-o myfile.txt`).
 - `--limit N` — stop after N results
 - `--no-dedup` / `--max-memory 512` / `--disk-dedup` — handle huge runs without filling memory
 - `--resume` — if interrupted (Ctrl+C), run the same command again to continue
-- `--filters all` (or rule names such as `pattern_repetition`) — drop weak lines with the cleaning rules while generating: a smaller file, a slower run
+- `--filters all` (or rule names such as `pattern_repetition`) — drop weak lines with the cleaning rules while generating: a smaller file. Rules that look for a piece inside the line (repeats, runs, years…) skip whole branches, so most of those lines are never even built
 
 Example `config.json`:
 ```json
@@ -196,7 +196,7 @@ Sonuç **`combinations.txt`** dosyasına kaydedilir (`-o dosyam.txt` ile değiş
 - `--limit N` — N sonuçtan sonra dur
 - `--no-dedup` / `--max-memory 512` / `--disk-dedup` — belleği doldurmadan devasa işleri yürüt
 - `--resume` — kesilirse (Ctrl+C) aynı komutu tekrar çalıştırıp kaldığın yerden devam et
-- `--filters all` (ya da `pattern_repetition` gibi kural adları) — zayıf satırları üretirken temizleme kurallarıyla at: dosya küçülür, üretim yavaşlar
+- `--filters all` (ya da `pattern_repetition` gibi kural adları) — zayıf satırları üretirken temizleme kurallarıyla at: dosya küçülür. Satırın içinde parça arayan kurallar (tekrar, sıra, yıl…) bütün dalları atlar, bu satırların çoğu hiç üretilmez
 
 Örnek `config.json`:
 ```json

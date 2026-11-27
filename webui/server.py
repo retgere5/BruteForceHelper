@@ -475,6 +475,7 @@ class WebApp:
                 'stopped_by': summary['stopped_by'],
                 'filtered': summary['filtered'],
                 'filtered_total': summary['filtered_total'],
+                'skipped': summary['skipped'],
                 'head': read_head(path),
             }
 

@@ -96,10 +96,11 @@
       'gen.ringWords': 'words per line',
       'gen.freshKey': 'New since your last change',
       'gen.rules': 'Cleaning rules',
-      'gen.rulesHint': 'A switched-on rule drops a line before it is written: the file gets smaller, the run gets slower.',
+      'gen.rulesHint': 'A switched-on rule drops a line before it is written: the file gets smaller. Most rules skip such lines without building them; each rule still adds some time.',
       'gen.estimateRules': 'results at most; the rules will drop some',
       'gen.largeRules': 'Large run: at most {size} on disk, less once the rules drop lines.',
       'gen.removedByRules': 'The rules dropped {n} lines.',
+      'gen.removedSkipped': 'The rules dropped {n} lines; {s} of them were never generated.',
       'dock.removed': '{n} dropped by rules',
       'gen.large': 'Large run: roughly {size} on disk.',
       'gen.huge': 'This would practically never finish. Set a longest length or a result limit.',
@@ -301,10 +302,11 @@
       'gen.ringWords': 'kelimelik satır',
       'gen.freshKey': 'Son değişiklikle gelenler',
       'gen.rules': 'Temizleme kuralları',
-      'gen.rulesHint': 'Açık bir kural, satırı diske yazmadan atar: dosya küçülür, üretim yavaşlar.',
+      'gen.rulesHint': 'Açık bir kural, satırı diske yazmadan atar: dosya küçülür. Çoğu kural bu satırları hiç üretmeden atlar; yine de her kural biraz süre ekler.',
       'gen.estimateRules': 'sonuç, en fazla; kurallar bir kısmını atacak',
       'gen.largeRules': 'Büyük iş: diskte en fazla {size}; kurallar satır attıkça daha az.',
       'gen.removedByRules': 'Kurallar {n} satırı attı.',
+      'gen.removedSkipped': 'Kurallar {n} satırı attı; bunların {s} tanesi hiç üretilmedi.',
       'dock.removed': 'kurallarla {n} atıldı',
       'gen.large': 'Büyük iş: diskte yaklaşık {size}.',
       'gen.huge': 'Bu iş pratikte hiç bitmez. En uzun uzunluk ya da bir sonuç sınırı belirle.',
@@ -1935,7 +1937,11 @@
       const reason = { limit: 'gen.stoppedLimit', memory: 'gen.stoppedMemory', user: 'gen.stoppedUser' }[r.stopped_by];
       const notes = [];
       if (reason) notes.push(t(reason));
-      if (r.filtered_total) notes.push(t('gen.removedByRules', { n: fmt(r.filtered_total) }));
+      if (r.skipped) {
+        notes.push(t('gen.removedSkipped', { n: fmt(r.filtered_total), s: fmt(r.skipped) }));
+      } else if (r.filtered_total) {
+        notes.push(t('gen.removedByRules', { n: fmt(r.filtered_total) }));
+      }
       if (notes.length) showNotice(notice, notes.join(' '), 'info');
       else notice.hidden = true;
       listTitle.textContent = r.head.length ? t('gen.firstLines', { n: fmt(r.head.length) }) : '';

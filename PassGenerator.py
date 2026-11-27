@@ -80,6 +80,9 @@ def generation_signature(words, min_length, max_length, modifiers, word_start, w
     if filters:
         # only present when rules are on, so older checkpoints keep matching
         fields['filters'] = sorted(set(filters))
+        # rules now skip whole branches, which changes what a saved position counts:
+        # checkpoints written before that must not match
+        fields['skips_branches'] = True
     payload = json.dumps(fields, sort_keys=True)
     return hashlib.sha1(payload.encode('utf-8')).hexdigest()
 
@@ -102,13 +105,92 @@ def make_rule_check(filters):
     if unknown:
         raise ValueError(f"unknown rule(s): {', '.join(unknown)} (choose from: {', '.join(known)})")
     from modules.filters import PasswordFilter, FilterStats
-    options = SimpleNamespace(**{name: name in names for name in known})
+    options = _rule_options(names)
     password_filter = PasswordFilter()
     stats = FilterStats()
 
     def check(line):
         return password_filter.is_valid_password(line, options, stats)
     return check, stats
+
+
+def _rule_options(names):
+    """The options namespace PasswordFilter reads, with exactly ``names`` turned on."""
+    return SimpleNamespace(**{name: name in names for name in filter_rule_names()})
+
+
+class _Pruner:
+    """Skips word sequences whose every line a substring rule would drop anyway.
+
+    Rules such as pattern_repetition look for a piece inside the line. Once the
+    words chosen so far put such a piece into every variation of the line, all
+    lines on that branch get dropped whatever words follow, so the generator skips
+    the branch instead of building them. ``lines`` counts the lines skipped this
+    way, ``by_rule`` splits them by the rule that cut each branch."""
+
+    def __init__(self, rules, variants):
+        self.rules = rules        # [(name, check)] in PasswordFilter's order
+        self.variants = variants  # one per line apply_flags() makes, see _prefix_variants()
+        self.reset()
+
+    def reset(self):
+        self.lines = 0
+        self.by_rule = {}
+
+
+def make_pruner(filters, modifiers, words, word_start=None, word_end=None):
+    """A _Pruner for the substring rules among ``filters``, or None when none of
+    them is on or the input is one the shortcut cannot reason about: an empty word
+    (a line could end right after any prefix) or Greek capital sigma (its lowercase
+    depends on the letter after it)."""
+    names = set(filters or ())
+    if not names:
+        return None
+    if '' in words or any('Σ' in text for text in (*words, word_start or '', word_end or '')):
+        return None
+    from modules.filters import PasswordFilter
+    rules = PasswordFilter().substring_rules(_rule_options(names))
+    if not rules:
+        return None
+    return _Pruner(rules, _prefix_variants(compile_modifiers(modifiers)))
+
+
+def _reversed_text(text):
+    return text[::-1]
+
+
+def _reversed_lower(text):
+    return text[::-1].lower()
+
+
+def _reversed_upper(text):
+    return text[::-1].upper()
+
+
+def _leet_of(variant):
+    return lambda text: leet_convert(variant(text))
+
+
+def _prefix_variants(flags):
+    """For each line apply_flags() makes (same order), a function from the first
+    characters of a line to text that line is sure to contain, as long as at
+    least one more word follows them."""
+    uppercase, capitalize, reverse, reverse_capitalize, reverse_upper, leet = flags
+    variants = [str]  # the line itself
+    if uppercase:
+        variants.append(str.upper)
+    if capitalize:
+        variants.append(str.capitalize)
+    if reverse or reverse_capitalize or reverse_upper:
+        variants.append(_reversed_text)
+        if reverse_capitalize:
+            # reversed, the line starts with a later word, so these characters end up lowercased
+            variants.append(_reversed_lower)
+        if reverse_upper:
+            variants.append(_reversed_upper)
+    if leet:
+        variants.extend([_leet_of(variant) for variant in variants])
+    return variants
 
 def save_checkpoint(path, signature, position, written):
     """Atomically persist resume state (position = base words fully processed)."""
@@ -201,10 +283,13 @@ def count_base_combinations(words, min_length, max_length):
 
 
 def variation_multiplier(modifiers):
-    """Lines each base word turns into with these variations, before dedup."""
-    multiplier = 1 + sum(1 for key in ('uppercase', 'capitalize', 'reverse', 'reverse_capitalize',
-                                       'reverse_upper') if modifiers.get(key))
-    return multiplier * 2 if modifiers.get('leet') else multiplier
+    """Lines each base word turns into with these variations, before dedup (the
+    same count apply_flags() returns)."""
+    uppercase, capitalize, reverse, reverse_capitalize, reverse_upper, leet = compile_modifiers(modifiers)
+    # any reversed variant also brings the plain reversed word with it
+    multiplier = (1 + uppercase + capitalize + (reverse or reverse_capitalize or reverse_upper)
+                  + reverse_capitalize + reverse_upper)
+    return multiplier * 2 if leet else multiplier
 
 
 def calculate_total_combinations(words, min_length, max_length, modifiers):
@@ -227,12 +312,15 @@ def _until_set(iterable, stop_event, every=4096):
             return
         yield item
 
-def generate_base_combinations(words, min_length, max_length, word_start=None, word_end=None, stop_event=None):
+def generate_base_combinations(words, min_length, max_length, word_start=None, word_end=None, stop_event=None,
+                               prune=None):
     """Generator for base word combinations.
 
     ``min_length``/``max_length`` bound the *character length* of each combined
     string; the token count is bounded by :func:`max_token_count`. Generation
-    ends early once ``stop_event`` (anything with ``is_set()``) is set.
+    ends early once ``stop_event`` (anything with ``is_set()``) is set. With
+    ``prune`` (see :func:`make_pruner`) branches whose every line its rules would
+    drop are skipped, and counted in it.
     """
     if not words:
         return
@@ -244,7 +332,11 @@ def generate_base_combinations(words, min_length, max_length, word_start=None, w
         # Too few tokens to ever reach min_length: skip the whole round
         if count * longest < floor:
             continue
-        if (not max_length or count * longest <= max_length) and count * shortest >= floor:
+        if prune is not None and count > 1:
+            # (one word per line leaves no prefix to cut early)
+            combos = _pruned_products(words, lengths, count, floor, max_length, shortest, longest,
+                                      word_start or '', prune)
+        elif (not max_length or count * longest <= max_length) and count * shortest >= floor:
             # every sequence of this many words fits: plain product(), no length checks
             combos = (''.join(combo) for combo in product(words, repeat=count))
         else:
@@ -279,6 +371,76 @@ def _bounded_products(words, lengths, count, floor, max_length, shortest, longes
             else:
                 yield from extend(prefix + word, total, left)
     return extend('', 0, count)
+
+
+def _completion_counter(lengths, floor, max_length, shortest, longest):
+    """below(left, used): how many sequences the walk yields under a prefix of
+    ``used`` characters that still needs ``left`` more words."""
+    groups = {}
+    for size in lengths:
+        groups[size] = groups.get(size, 0) + 1
+    memo = {}
+
+    def below(left, used):
+        if not left:
+            return 1
+        key = (left, used)
+        if key not in memo:
+            rest, total = left - 1, 0
+            for size, n in groups.items():
+                new = used + size
+                if (max_length and new + rest * shortest > max_length) or new + rest * longest < floor:
+                    continue
+                total += n * below(rest, new)
+            memo[key] = total
+        return memo[key]
+    return below
+
+
+def _pruned_products(words, lengths, count, floor, max_length, shortest, longest, word_start, pruner):
+    """_bounded_products() that also skips each branch whose lines the pruner's
+    rules would all drop. Whatever it does yield comes in the same order."""
+    rules, variants = pruner.rules, pruner.variants
+    plain = len(variants) == 1  # no variations: check the line itself
+    below = _completion_counter(lengths, floor, max_length, shortest, longest)
+
+    def cut_by(text):
+        for name, matches in rules:
+            if matches(text):
+                return name
+        return None
+
+    def skip(names, sequences):
+        pruner.lines += sequences * len(names)
+        for name in names:
+            pruner.by_rule[name] = pruner.by_rule.get(name, 0) + sequences
+
+    # Only prefixes with more words to come are checked: a finished line goes to the
+    # full rule check anyway, so cutting there would save nothing.
+    def extend(prefix, used, rest, verdicts):
+        for word, size in zip(words, lengths):
+            total, left = used + size, rest - 1
+            if (max_length and total + left * shortest > max_length) or total + left * longest < floor:
+                continue
+            line = prefix + word
+            if not left:
+                yield line
+                continue
+            text = word_start + line if word_start else line
+            if plain:
+                name = cut_by(text)
+                if name is not None:
+                    skip((name,), below(left, total))
+                    continue
+                yield from extend(line, total, left, verdicts)
+            else:
+                # a variation stays cut once it is; the branch goes when all of them are
+                now = [verdict or cut_by(variant(text)) for verdict, variant in zip(verdicts, variants)]
+                if all(now):
+                    skip(now, below(left, total))
+                    continue
+                yield from extend(line, total, left, now)
+    return extend('', 0, count, [None] * len(variants))
 
 def compile_modifiers(modifiers):
     """Precompute modifier flags once so the hot loop avoids per-word dict lookups."""
@@ -338,7 +500,8 @@ def preview_combinations(words, min_length=1, max_length=None, modifiers=None, w
     seen = set()
     sample = []
     bases = generate_base_combinations(words, min_length, max_length, word_start, word_end,
-                                       _Deadline(time_budget))
+                                       _Deadline(time_budget),
+                                       make_pruner(filters, modifiers or {}, words, word_start, word_end))
     for base_word in bases:
         for word in (apply_flags(base_word, flags) if has_modifiers else (base_word,)):
             if keep is not None and not keep(word):
@@ -371,7 +534,9 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
     """Generate every combination and write them to `filename`.
 
     ``filters`` names WordlistOptimizer rules: a line any of them matches is dropped
-    before it is written (and before dedup, so it costs no memory either).
+    before it is written (and before dedup, so it costs no memory either). Rules
+    that look for a piece inside the line also cut whole branches while the words
+    are combined, so most lines they drop are never built (the result's ``skipped``).
 
     For programmatic callers such as the web UI: ``quiet`` turns off all console
     output and lets errors propagate instead of printing them,
@@ -402,6 +567,7 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
         }
         rule = make_rule_check(filters)
         keep = rule[0] if rule else None
+        pruner = make_pruner(filters, modifiers, lst, word_start, word_end)
 
         # Calculate total combinations
         total_combinations = calculate_total_combinations(lst, min_length, max_length, modifiers)
@@ -488,25 +654,37 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
             out_buffer = []
             processed = 0
             removed = 0
+            shown_skipped = 0
 
             def flush_buffer():
                 if out_buffer:
                     file.write('\n'.join(out_buffer) + '\n')
                     out_buffer.clear()
 
+            def skipped():
+                # lines the rules dropped by cutting a branch, never built or checked
+                return pruner.lines if pruner is not None else 0
+
+            def new_skipped():
+                nonlocal shown_skipped
+                delta, shown_skipped = skipped() - shown_skipped, skipped()
+                return delta
+
             def report():
                 if live is not None:
-                    live['processed'] = processed
-                    live['filtered_total'] = removed
+                    live['processed'] = processed + skipped()
+                    live['filtered_total'] = removed + skipped()
                 if progress is not None:
                     progress(written, total_combinations)
 
             try:
                 # Generate and process combinations
                 for base_word in generate_base_combinations(lst, min_length, max_length, word_start, word_end,
-                                                            stop_event):
+                                                            stop_event, pruner):
                     if base_index < skip_count:
                         base_index += 1
+                        if base_index == skip_count and pruner is not None:
+                            pruner.reset()  # what was cut before the resume point is not this run's
                         continue
 
                     # apply_flags() yields the original word first, then its variants
@@ -514,10 +692,11 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
                     for word in words:
                         processed += 1
                         if keep is not None:
-                            # with rules on, the bar follows candidates (written lags behind)
+                            # with rules on, the bar follows candidates (written lags behind),
+                            # skipped branches included
                             pending += 1
                             if pending >= PROGRESS_UPDATE_BATCH:
-                                progress_bar.update(pending)
+                                progress_bar.update(pending + new_skipped())
                                 pending = 0
                                 report()
                             if not keep(word):
@@ -608,8 +787,7 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
                 stopped_by = 'user'
             report()
 
-            if pending:
-                progress_bar.update(pending)
+            progress_bar.update(pending + new_skipped())
 
             # Update progress bar to 100% if needed
             if progress_bar.n < total_combinations:
@@ -627,8 +805,13 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
             say(f"\n{Fore.GREEN}Combinations saved successfully.{Style.RESET_ALL}")
             say(f"{Fore.CYAN}Total combinations generated:{Style.RESET_ALL} {Fore.YELLOW}{written:,}{Style.RESET_ALL}")
             filtered = {name: n for name, n in rule[1].stats.items() if n} if rule else {}
+            for name, n in (pruner.by_rule.items() if pruner is not None else ()):
+                filtered[name] = filtered.get(name, 0) + n
+            removed_total = removed + skipped()
             if rule:
-                say(f"{Fore.CYAN}Removed by rules:{Style.RESET_ALL} {Fore.YELLOW}{removed:,}{Style.RESET_ALL}"
+                never_built = (f" ({skipped():,} of them were never generated)" if skipped() else '')
+                say(f"{Fore.CYAN}Removed by rules:{Style.RESET_ALL} {Fore.YELLOW}{removed_total:,}{Style.RESET_ALL}"
+                    + never_built
                     + ''.join(f"\n  {name}: {n:,}" for name, n in sorted(filtered.items(), key=lambda kv: -kv[1])))
             say(f"{Fore.CYAN}Processing time:{Style.RESET_ALL} {Fore.YELLOW}{elapsed_time:.2f}{Style.RESET_ALL} seconds")
             say(f"{Fore.CYAN}Memory usage:{Style.RESET_ALL} {Fore.YELLOW}{(sys.getsizeof(seen) + seen_bytes) / (1024*1024):.2f}{Style.RESET_ALL} MB")
@@ -640,7 +823,8 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
                 'path': os.path.abspath(filename),
                 'stopped_by': stopped_by,
                 'filtered': filtered,
-                'filtered_total': removed,
+                'filtered_total': removed_total,
+                'skipped': skipped(),
             }
 
     except PermissionError:

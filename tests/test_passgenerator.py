@@ -327,6 +327,15 @@ def test_estimate_scales_with_variations():
     assert pg.calculate_total_combinations(['ab', 'c'], 2, 5, _mods(capitalize=True, leet=True)) == base * 4
 
 
+def test_variation_count_matches_the_lines_each_word_turns_into():
+    # -Ba / -BA alone also bring the plain reversed word with them
+    from itertools import product
+    keys = ['uppercase', 'capitalize', 'reverse', 'reverse_capitalize', 'reverse_upper', 'leet']
+    for values in product([False, True], repeat=len(keys)):
+        mods = dict(zip(keys, values))
+        assert pg.variation_multiplier(mods) == len(pg.apply_modifications('abc', mods)), mods
+
+
 # --- length-pruned generation -----------------------------------------------------
 
 def _reference_combinations(words, mn, mx, ws=None, we=None):
@@ -450,6 +459,139 @@ def test_cli_filters_all(tmp_path, monkeypatch):
     lines = _lines(out)
     # every rule on: 72 of the 81 mixed lines survive; runs like '!!!!' do not
     assert len(lines) == 72 and '!!!!' not in lines and 'a1a1' not in lines
+
+
+def _reference_run(words, mn, mx, mods, rules, ws=None, we=None):
+    """Lines and drop count of a run built line by line, with no branch skipped:
+    every combination, every variation, the rules, then dedup."""
+    keep = pg.make_rule_check(rules)[0]
+    seen, lines, dropped = set(), [], 0
+    for base in _reference_combinations(words, mn, mx, ws, we):
+        for line in pg.apply_modifications(base, mods):
+            if not keep(line):
+                dropped += 1
+            elif line not in seen:
+                seen.add(line)
+                lines.append(line)
+    return lines, dropped
+
+
+PRUNE_WORDS = ['ab', 'a', '1', '!']
+PRUNE_CASES = [
+    # words, min, max, modifiers, rules, prefix, suffix
+    (PRUNE_WORDS, 4, 8, {}, ['pattern_repetition'], None, None),
+    (PRUNE_WORDS, 4, 8, {}, 'all', None, None),
+    (PRUNE_WORDS, 3, 7, {'uppercase': True, 'capitalize': True}, ['pattern_repetition', 'sequential_chars'],
+     None, None),
+    (['Ab', 'c', '12', '3'], 2, 7, {'reverse_capitalize': True}, ['pattern_repetition', 'repetitive_chars'],
+     None, None),
+    (['ab', 'c', '9', '1'], 2, 6, {'reverse': True, 'reverse_upper': True, 'leet': True}, 'all', '<', '>'),
+    (['es', 'l', '7', 't'], 2, 6, {'leet': True}, ['leet_speak', 'pattern_repetition'], None, None),
+    (['qw', 'er', 'ty', 'a'], 2, 8, {'uppercase': True}, ['keyboard_patterns', 'common_words'], 'x', None),
+    (['19', '9', '0', '5'], 4, 10, {}, ['year_patterns', 'date_patterns', 'phone_patterns'], None, '!'),
+    (['a', 'a', 'b'], 1, 6, {}, ['pattern_repetition'], None, None),
+    (['ab', 'c'], 1, None, {'capitalize': True}, ['pattern_repetition'], 'ab', None),
+    (['ab', '', 'a'], 1, 5, {'reverse_capitalize': True}, ['pattern_repetition'], None, None),
+    (['ΣΣ', 'σ', 'a'], 1, 6, {'capitalize': True, 'reverse_capitalize': True}, ['pattern_repetition'], None, None),
+]
+
+
+def test_rules_skip_branches_without_changing_the_output(tmp_path):
+    for i, (words, mn, mx, mods, rules, ws, we) in enumerate(PRUNE_CASES):
+        rules = list(pg.filter_rule_names()) if rules == 'all' else rules
+        out = tmp_path / f"o{i}.txt"
+        result = pg.generate_and_save_combinations(words, str(out), mn, mx, word_start=ws, word_end=we,
+                                                   quiet=True, filters=rules, **mods)
+        expected, dropped = _reference_run(words, mn, mx, _mods(**mods), rules, ws, we)
+        assert out.read_text(encoding='utf-8').splitlines() == expected, i
+        assert result['filtered_total'] == dropped, i
+
+
+def test_limit_with_skipped_branches_keeps_the_first_lines(tmp_path):
+    out = tmp_path / "o.txt"
+    pg.generate_and_save_combinations(PRUNE_WORDS, str(out), 4, 8, limit=500, quiet=True,
+                                      filters=['pattern_repetition'])
+    expected, _ = _reference_run(PRUNE_WORDS, 4, 8, _mods(), ['pattern_repetition'])
+    assert out.read_text(encoding='utf-8').splitlines() == expected[:500]
+
+
+def test_rules_skip_lines_without_building_them(tmp_path):
+    result = pg.generate_and_save_combinations(PRUNE_WORDS, str(tmp_path / "o.txt"), 4, 8, quiet=True,
+                                               filters=['pattern_repetition'])
+    assert 0 < result['skipped'] <= result['filtered_total']
+
+
+def test_skipped_branches_account_for_every_missing_line():
+    mods = _mods(uppercase=True, reverse=True)
+    pruner = pg.make_pruner(['pattern_repetition'], mods, PRUNE_WORDS)
+    built = sum(1 for _ in pg.generate_base_combinations(PRUNE_WORDS, 4, 8, prune=pruner))
+    missing = pg.count_base_combinations(PRUNE_WORDS, 4, 8) - built
+    assert missing > 0
+    assert pruner.lines == missing * pg.variation_multiplier(mods)
+    assert sum(pruner.by_rule.values()) == pruner.lines
+
+
+def test_progress_counts_skipped_lines_as_processed(tmp_path):
+    live = {}
+    result = pg.generate_and_save_combinations(PRUNE_WORDS, str(tmp_path / "o.txt"), 4, 8, quiet=True,
+                                               filters=['pattern_repetition'], live=live)
+    assert result['skipped'] > 0
+    assert live['processed'] == pg.calculate_total_combinations(PRUNE_WORDS, 4, 8, _mods())
+    assert live['filtered_total'] == result['filtered_total'] == sum(result['filtered'].values())
+
+
+def test_pruning_stays_off_for_inputs_it_cannot_reason_about():
+    # an empty word can end a line right after a prefix, and Greek capital sigma
+    # lowercases differently at the end of a word: such runs check every line instead
+    assert pg.make_pruner(['pattern_repetition'], _mods(), ['a', '']) is None
+    assert pg.make_pruner(['pattern_repetition'], _mods(), ['aΣ', 'b']) is None
+    assert pg.make_pruner(['pattern_repetition'], _mods(), ['a'], word_end='Σ') is None
+    assert pg.make_pruner(['number_only'], _mods(), ['a', 'b']) is None  # judges whole lines only
+    assert pg.make_pruner(None, _mods(), ['a', 'b']) is None
+    assert pg.make_pruner(['pattern_repetition'], _mods(), ['a', 'b']) is not None
+
+
+def test_preview_with_rules_matches_the_run(tmp_path):
+    out = tmp_path / "o.txt"
+    pg.generate_and_save_combinations(PRUNE_WORDS, str(out), 4, 8, quiet=True, filters=['pattern_repetition'])
+    sample = pg.preview_combinations(PRUNE_WORDS, 4, 8, filters=['pattern_repetition'], count=500,
+                                     time_budget=5)
+    assert sample == out.read_text(encoding='utf-8').splitlines()[:500]
+
+
+def test_resume_with_rules_matches_an_uninterrupted_run(tmp_path, monkeypatch):
+    rules = ['pattern_repetition']
+    full = tmp_path / "full.txt"
+    pg.generate_and_save_combinations(PRUNE_WORDS, str(full), 4, 8, quiet=True, filters=rules)
+    out = tmp_path / "o.txt"
+    _interrupt_after(monkeypatch, 40)
+    pg.generate_and_save_combinations(PRUNE_WORDS, str(out), 4, 8, resume=True, filters=rules)
+    assert os.path.exists(str(out) + ".pgckpt")
+    monkeypatch.undo()
+    pg.generate_and_save_combinations(PRUNE_WORDS, str(out), 4, 8, resume=True, filters=rules)
+    assert out.read_text(encoding='utf-8').splitlines() == full.read_text(encoding='utf-8').splitlines()
+
+
+def test_checkpoints_from_before_rules_skipped_branches_start_over(tmp_path, capsys):
+    # back then a position counted every combination, so resuming one would skip the wrong lines
+    import hashlib
+    rules = ['pattern_repetition']
+    fields = {'words': PRUNE_WORDS, 'min': 4, 'max': 8, 'modifiers': _mods(), 'ws': None, 'we': None,
+              'gzip': False, 'filters': rules}
+    old = hashlib.sha1(json.dumps(fields, sort_keys=True).encode('utf-8')).hexdigest()
+    out = tmp_path / "o.txt"
+    out.write_text('abab\n', encoding='utf-8')
+    with open(str(out) + '.pgckpt', 'w', encoding='utf-8') as f:
+        json.dump({'signature': old, 'position': 5, 'written': 1}, f)
+    pg.generate_and_save_combinations(PRUNE_WORDS, str(out), 4, 8, resume=True, filters=rules)
+    assert 'Resuming' not in capsys.readouterr().out
+
+
+def test_cli_reports_lines_skipped_without_building_them(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(sys, 'argv', ['PassGenerator.py', '-w', *PRUNE_WORDS, '-m', '4', '-M', '8',
+                                      '-o', str(tmp_path / "o.txt"), '--filters', 'pattern_repetition'])
+    pg.main()
+    assert 'never generated' in capsys.readouterr().out
 
 
 def test_cli_filters_accept_commas(tmp_path, monkeypatch):
