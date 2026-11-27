@@ -82,6 +82,26 @@ Example `config.json`:
 ```
 </details>
 
+### ⚡ Much faster with Rust (optional)
+
+The heavy part of PassGenerator — combining the words, the variations, dropping repeats, writing the file — also exists as a small Rust program (`native/`). It uses every CPU core and writes **exactly the same file**, Turkish letters included:
+
+| Run (9 words, 8–12 characters) | Python | With Rust |
+|---|---|---|
+| 5 million lines | 8.8 s | 0.08 s |
+| 40 million candidate lines with `-AB -Ab -L337` | 47 s | 0.5 s |
+| 11 million lines, gzip (`-z`) | 15.5 s | 0.5 s |
+
+<sub>Measured on a 6-core Ryzen 5 5600.</sub>
+
+Build it once (you need [Rust](https://rustup.rs) 1.74 or newer):
+
+```bash
+cargo build --release --manifest-path native/Cargo.toml
+```
+
+That's all — PassGenerator finds the program by itself, on the command line and in the web interface. Without it nothing changes: everything keeps running in Python. Runs with `--filters`, `--resume` or `--disk-dedup` always use Python, and `BFH_NATIVE=0` switches the Rust program off.
+
 ## 🔍 WordlistOptimizer — clean a wordlist
 
 Just run it and answer the questions (language, input/output file, which filters to apply):
@@ -131,7 +151,7 @@ This project is for **educational purposes only**. You are responsible for makin
 
 MIT — see [LICENSE](LICENSE).
 
-> 🧪 *Developers:* `pip install -r requirements-dev.txt && pytest`
+> 🧪 *Developers:* `pip install -r requirements-dev.txt && pytest` · Rust core: `cargo test --manifest-path native/Cargo.toml`
 
 ---
 
@@ -206,6 +226,26 @@ Sonuç **`combinations.txt`** dosyasına kaydedilir (`-o dosyam.txt` ile değiş
 ```
 </details>
 
+### ⚡ Rust ile çok daha hızlı (isteğe bağlı)
+
+PassGenerator'ın ağır kısmı — kelimeleri birleştirme, varyasyonlar, tekrarları atma, dosyayı yazma — küçük bir Rust programı olarak da var (`native/`). Bütün işlemci çekirdeklerini kullanır ve Türkçe harfler dahil **birebir aynı dosyayı** yazar:
+
+| İş (9 kelime, 8–12 karakter) | Python | Rust ile |
+|---|---|---|
+| 5 milyon satır | 8,8 sn | 0,08 sn |
+| `-AB -Ab -L337` ile 40 milyon aday satır | 47 sn | 0,5 sn |
+| 11 milyon satır, gzip (`-z`) | 15,5 sn | 0,5 sn |
+
+<sub>6 çekirdekli Ryzen 5 5600 üzerinde ölçüldü.</sub>
+
+Bir kez derlemen yeter ([Rust](https://rustup.rs) 1.74 veya üstü gerekir):
+
+```bash
+cargo build --release --manifest-path native/Cargo.toml
+```
+
+Hepsi bu — PassGenerator programı kendisi bulur, komut satırında da web arayüzünde de. Derlemezsen hiçbir şey değişmez: her şey Python'la çalışmaya devam eder. `--filters`, `--resume` ya da `--disk-dedup` kullanılan işler her zaman Python'la çalışır; `BFH_NATIVE=0` Rust programını kapatır.
+
 ## 🔍 WordlistOptimizer — liste temizle
 
 Çalıştır ve soruları yanıtla (dil, giriş/çıkış dosyası, hangi filtreler):
@@ -255,7 +295,7 @@ Bu proje yalnızca **eğitim amaçlıdır**. Test ettiğin her sistem için izni
 
 MIT — bkz. [LICENSE](LICENSE).
 
-> 🧪 *Geliştiriciler:* `pip install -r requirements-dev.txt && pytest`
+> 🧪 *Geliştiriciler:* `pip install -r requirements-dev.txt && pytest` · Rust çekirdeği: `cargo test --manifest-path native/Cargo.toml`
 
 ---
 

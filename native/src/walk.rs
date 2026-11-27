@@ -63,7 +63,13 @@ impl Plan {
             Some(max) => (max / shortest).max(1),
             None => lens.len() as u64,
         };
-        if max.is_some_and(|max| (max + 1).saturating_mul(rounds) > WAYS_LIMIT) {
+        // the counts take a row of lengths per round: up to the maximum, or up
+        // to the minimum when there is none (those rows are made as rounds come)
+        let cells = match max {
+            Some(max) => (max + 1).saturating_mul(rounds),
+            None => spec.min.saturating_add(1),
+        };
+        if cells > WAYS_LIMIT {
             return Err("the length bounds are too wide for the core".into());
         }
         let mut sorted = lens.clone();
@@ -749,6 +755,7 @@ mod tests {
         assert!(Plan::new(&spec(&["a", ""], 1, None)).is_err());
         assert!(Plan::new(&spec(&["a\nb"], 1, None)).is_err());
         assert!(Plan::new(&spec(&["a"], 1, Some(1 << 20))).is_err());
+        assert!(Plan::new(&spec(&["a"], 1 << 30, None)).is_err());
         let mut odd = spec(&["a"], 1, None);
         odd.newline = b"\r".to_vec();
         assert!(Plan::new(&odd).is_err());

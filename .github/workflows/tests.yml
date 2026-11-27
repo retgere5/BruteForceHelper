@@ -23,5 +23,26 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
-      - name: Run tests
+      - name: Run tests without the Rust core
         run: pytest -q
+        env:
+          BFH_NATIVE: "0"
+      - name: Build the Rust core
+        run: cargo build --release --manifest-path native/Cargo.toml
+      - name: Test the Rust core
+        run: cargo test --manifest-path native/Cargo.toml
+      - name: Run tests with the Rust core
+        run: pytest -q
+        env:
+          # a core that failed to build must fail the run, not skip its tests
+          BFH_REQUIRE_NATIVE: "1"
+
+  oldest-rust:
+    name: Rust 1.74 (oldest supported)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the Rust core with Rust 1.74
+        run: |
+          rustup toolchain install 1.74 --profile minimal
+          cargo +1.74 build --release --locked --manifest-path native/Cargo.toml

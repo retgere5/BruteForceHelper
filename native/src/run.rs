@@ -166,7 +166,12 @@ impl Feed {
         let mut state = self.state.lock().unwrap();
         state.out -= 1;
         state.closed |= close;
-        self.room.notify_all();
+        if close {
+            self.room.notify_all();
+        } else {
+            // one place came free, so one waiting thread can go on
+            self.room.notify_one();
+        }
     }
 }
 

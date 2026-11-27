@@ -739,7 +739,7 @@ def _generate_native(core, words, filename, min_length, max_length, modifiers, w
                       dedup, limit, max_memory_mb * 1024 * 1024 if max_memory_mb else None,
                       use_gzip or filename.endswith('.gz'), _native_threads())
     start_time = time.time()
-    summary = failure = None
+    summary = failure = crash = None
     shown = memory = 0
     memory_warned = stopping = False
     # Python opens the file itself, so a bad path fails the way it always did
@@ -757,12 +757,15 @@ def _generate_native(core, words, filename, min_length, max_length, modifiers, w
             except OSError:
                 pass  # the core ended early and says why on stderr
             for raw in process.stderr:
-                kind, _, rest = raw.decode('utf-8', 'replace').strip().partition(' ')
+                text = raw.decode('utf-8', 'replace').strip()
+                kind, _, rest = text.partition(' ')
                 if kind == 'R':
                     summary = json.loads(rest)
                 elif kind == 'E':
                     failure = rest
-                elif kind == 'P':
+                elif kind != 'P':
+                    crash = crash or text  # not a report of ours: the first line of a crash
+                else:
                     processed, written, memory = map(int, rest.split())
                     progress_bar.update(written - shown)
                     shown = written
@@ -803,7 +806,7 @@ def _generate_native(core, words, filename, min_length, max_length, modifiers, w
         progress_bar.close()
         if failure and failure.startswith('io '):
             raise OSError(failure[3:])
-        say(f"{Fore.YELLOW}The Rust core could not do this run ({failure or 'exit code %d' % code}); "
+        say(f"{Fore.YELLOW}The Rust core could not do this run ({failure or crash or 'exit code %d' % code}); "
             f"continuing in Python.{Style.RESET_ALL}")
         return None
 
