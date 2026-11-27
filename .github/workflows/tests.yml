@@ -11,7 +11,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        # ubuntu-latest moved to 26.04, which has no Python 3.9 build for setup-python
+        os: [windows-latest, ubuntu-24.04]
         python-version: ["3.9", "3.12"]
     steps:
       - uses: actions/checkout@v4
