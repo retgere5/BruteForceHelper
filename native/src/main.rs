@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 mod dedup;
+mod gz;
 mod run;
 mod sardinas;
 mod spec;

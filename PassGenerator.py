@@ -650,12 +650,10 @@ def _native_threads():
 
 
 def _native_unsupported(words, min_length, max_length, word_start, word_end, limit, max_memory_mb,
-                        filters, resume, disk_dedup, stop_event, compressed):
+                        filters, resume, disk_dedup, stop_event):
     """Why a run has to stay in Python, or None when the core can do it."""
     if filters:
         return 'cleaning rules run in Python'
-    if compressed:
-        return 'gzip output is written by Python'
     if resume or disk_dedup:
         return 'resume and disk dedup run in Python'
     if stop_event is not None and stop_event.is_set():
@@ -908,8 +906,7 @@ def generate_and_save_combinations(lst, filename, min_length=1, max_length=None,
         # The Rust core does the whole run when it is built and takes these options
         core = _native_binary()
         if core and not _native_unsupported(lst, min_length, max_length, word_start, word_end, limit,
-                                            max_memory_mb, filters, resume, disk_dedup, stop_event,
-                                            use_gzip or filename.endswith('.gz')):
+                                            max_memory_mb, filters, resume, disk_dedup, stop_event):
             result = _generate_native(core, lst, filename, min_length, max_length, modifiers, word_start,
                                       word_end, use_gzip, limit, max_memory_mb, dedup, total_combinations,
                                       say, quiet, progress, live, stop_event)

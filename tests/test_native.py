@@ -3,6 +3,7 @@
 These tests need the built program (cargo build --release --manifest-path
 native/Cargo.toml). Without it they are skipped, unless BFH_REQUIRE_NATIVE=1
 asks for a failure instead (CI sets it, so a broken build cannot hide)."""
+import gzip
 import itertools
 import os
 import random
@@ -233,7 +234,6 @@ def test_console_run_through_the_core_prints_the_usual_report(core, tmp_path, mo
     (['a', 'b'], {'disk_dedup': True}),
     (['a', 'b'], {'filters': ['repetitive_chars']}),
     (['a', 'b'], {'limit': -1}),
-    (['a', 'b'], {'use_gzip': True}),
 ])
 def test_runs_the_core_cannot_do_stay_in_python(core, tmp_path, monkeypatch, words, options):
     monkeypatch.delenv('BFH_NATIVE', raising=False)
@@ -409,3 +409,35 @@ def test_memory_cap_stops_the_core(core, tmp_path, monkeypatch, capsys):
     assert len(lines) == result['written'] == len(set(lines))
     assert 10_000 < len(lines) < 1_000_000
     assert lines[:5000] == pg.preview_combinations(words, 1, 12, count=5000, time_budget=60)
+
+
+# --- gzip -----------------------------------------------------------------------------
+
+GZIP_RUNS = [
+    (['a', 'b'], 1, 3, {}),
+    (list('abcdefgh'), 1, 7, {}),                                              # 21 MB: many chunks
+    (['ali', 'ış', 'İz', '1'], 2, 9, {'uppercase': True, 'capitalize': True, 'turkish': True}),
+    (['a', 'b', 'ab', 'c'], 1, 9, {'limit': 50_000}),
+    (['abc'], 7, 8, {}),                                                       # nothing to write
+]
+
+
+@pytest.mark.parametrize('words, shortest, longest, options', GZIP_RUNS)
+def test_gzip_output_unpacks_to_pythons_lines(core, tmp_path, monkeypatch, words, shortest, longest, options):
+    python = _generate('python', monkeypatch, tmp_path / 'python.gz', words, shortest, longest,
+                       use_gzip=True, **options)
+    native = _generate('native', monkeypatch, tmp_path / 'native.gz', words, shortest, longest,
+                       use_gzip=True, **options)
+    assert (python['engine'], native['engine']) == ('python', 'native')
+    assert native['written'] == python['written']
+    with gzip.open(tmp_path / 'native.gz') as ours, gzip.open(tmp_path / 'python.gz') as theirs:
+        assert ours.read() == theirs.read()
+
+
+def test_a_gz_name_alone_turns_compression_on(core, tmp_path, monkeypatch):
+    monkeypatch.delenv('BFH_NATIVE', raising=False)
+    out = tmp_path / 'list.gz'
+    result = pg.generate_and_save_combinations(['a', 'b'], str(out), 1, 2, quiet=True)
+    assert result['engine'] == 'native'
+    with gzip.open(out, 'rt', encoding='utf-8') as lines:
+        assert lines.read().split() == ['a', 'b', 'aa', 'ab', 'ba', 'bb']

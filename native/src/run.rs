@@ -22,6 +22,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::dedup::Seen;
+use crate::gz::Gz;
 use crate::sardinas::spells_each_line_once;
 use crate::spec::Spec;
 use crate::walk::{Block, Plan, Splitter, Task, Walker};
@@ -38,9 +39,6 @@ struct Meter {
 }
 
 pub fn generate(spec: &Spec) -> Result<(), Failure> {
-    if spec.gzip {
-        return Err(Failure::Job("gzip output is not done here".into()));
-    }
     let plan = Plan::new(spec)?;
     let stop = Arc::new(AtomicBool::new(false));
     watch_stdin(Arc::clone(&stop));
@@ -61,7 +59,11 @@ pub fn generate(spec: &Spec) -> Result<(), Failure> {
         "memory"
     };
     let mut sink = Sink::new(
-        BufWriter::with_capacity(1 << 20, output()?),
+        if spec.gzip {
+            Out::Gz(Gz::new(output()?, threads))
+        } else {
+            Out::Plain(BufWriter::with_capacity(1 << 20, output()?))
+        },
         spec,
         &plan,
         Arc::clone(&meter),
@@ -69,7 +71,7 @@ pub fn generate(spec: &Spec) -> Result<(), Failure> {
         threads,
     );
     let finished = run(&plan, &stop, &mut sink, threads)?;
-    sink.out.flush()?;
+    sink.out.finish()?;
 
     reporter.finish();
     let stopped_by = match sink.ended {
@@ -586,6 +588,38 @@ fn watch_stdin(stop: Arc<AtomicBool>) {
             }
         }
     });
+}
+
+/// The output file: as it is, or gzip-compressed.
+enum Out {
+    Plain(BufWriter<File>),
+    Gz(Gz<File>),
+}
+
+impl Out {
+    /// Writes out whatever is still held back.
+    fn finish(&mut self) -> io::Result<()> {
+        match self {
+            Out::Plain(file) => file.flush(),
+            Out::Gz(gz) => gz.finish(),
+        }
+    }
+}
+
+impl Write for Out {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        match self {
+            Out::Plain(file) => file.write(bytes),
+            Out::Gz(gz) => gz.write(bytes),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            Out::Plain(file) => file.flush(),
+            Out::Gz(gz) => gz.flush(),
+        }
+    }
 }
 
 /// Standard output as a plain file: the caller points it at the output file.

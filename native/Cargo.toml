@@ -7,6 +7,10 @@ description = "Generation core of BruteForce Helper's PassGenerator"
 license = "MIT"
 publish = false
 
+[dependencies]
+# gzip output; the default pure-Rust backend needs no C compiler
+flate2 = "1"
+
 [profile.release]
 lto = true
 codegen-units = 1
